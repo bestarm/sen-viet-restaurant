@@ -41,7 +41,13 @@ import { SEED_REAL_PERSONNEL, SEED_DAILY_MEALS, SEED_COST_GROUPS } from '../src/
 import { SEED_NXT_RECORDS } from '../src/components/reconciliation/nxtData';
 import { warehouseApi } from '../src/api/warehouse';
 import { formatWatermarkText } from '../src/utils/imageCompressor';
-import { WAREHOUSE_LOCATIONS, WarehouseLocation } from '../src/types/warehouse';
+import {
+  WAREHOUSE_LOCATIONS,
+  WarehouseLocation,
+  PRE_PROCESSING_CATEGORIES,
+  PRE_PROCESSING_CATEGORY_MAP,
+  getItemPreProcessingCategory,
+} from '../src/types/warehouse';
 import { getBuffetFoodGroup, BUFFET_FOOD_GROUPS } from '../src/components/warehouse/StockCardsTab';
 import fs from 'fs';
 import path from 'path';
@@ -2468,6 +2474,396 @@ async function runTestSuite() {
     hasHeadChefFinancialProtection && hasFinancialMaskingInStockCards,
     'SUITE 18.8 Source Code Financial Masking Implementation in UI',
     'WarehouseModule truyền hideFinancials cho StockCardsTab, tự động che toàn bộ đơn giá, thành tiền và hiển thị "*** (Bảo mật tài chính)"'
+  );
+
+  // -----------------------------------------------------------------
+  // 19. KIỂM THỬ TÁI CẤU TRÚC KHO 2 TẦNG & CHUẨN HÓA LUỒNG BẾP (TASK-FLOW-01, 06, 07)
+  // -----------------------------------------------------------------
+  console.log('\n🏬 SUITE 19: Dual Inventory & Unified Flow Verification');
+
+  // 19.1: TASK-FLOW-01: Cấu hình 11 nhóm danh mục Kho Trước Chế Biến
+  const preCats = warehouseApi.getPreProcessingCategories();
+  assert(
+    preCats.length === 11,
+    'SUITE 19.1 Pre-Processing 11 Categories Count',
+    'Cấu hình chính xác đầy đủ 11 nhóm danh mục cho Kho Trước Chế Biến'
+  );
+
+  const expected11Codes = [
+    'BAR', 'DO_AN_NHAN_VIEN', 'HANG_KHO', 'HS_CHINH', 'HS_PHU',
+    'RAU', 'THIT', 'TIEU_HAO', 'VC_CUA_GHE', 'VC_VO_CUNG', 'VC_KHAC'
+  ];
+  const all11Present = expected11Codes.every(code => preCats.some(c => c.code === code));
+  assert(
+    all11Present,
+    'SUITE 19.1 Pre-Processing 11 Category Codes Integrity',
+    'Tất cả 11 mã danh mục (BAR, DO_AN_NHAN_VIEN, HANG_KHO, HS_CHINH, HS_PHU, RAU, THIT, TIEU_HAO, VC_CUA_GHE, VC_VO_CUNG, VC_KHAC) đều hiện diện chuẩn xác'
+  );
+
+  // Phân loại tự động nguyên liệu vào đúng 11 nhóm
+  const catCua = getItemPreProcessingCategory('HS-CUACAMAU', 'Hải sản chính', 'Hải sản chính', 'Cua Cà Mau');
+  const catBo = getItemPreProcessingCategory('TB-BACHIBO', 'Thịt', 'Thịt', 'Ba chỉ bò Mỹ');
+  const catRau = getItemPreProcessingCategory('RC-NAMKIM', 'Rau', 'Rau', 'Nấm kim châm');
+  const catBar = getItemPreProcessingCategory('DU-COCA', 'Bar', 'Bar', 'Coca Cola');
+  assert(
+    catCua === 'VC_CUA_GHE' && catBo === 'THIT' && catRau === 'RAU' && catBar === 'BAR',
+    'SUITE 19.1 Auto Item Pre-Processing Categorization',
+    'Tự động phân loại chính xác mặt hàng vào nhóm danh mục Kho Trước Chế Biến tương ứng'
+  );
+
+  // 19.2: TASK-FLOW-01: Kho Sau Chế Biến (Processed Dishes)
+  const processedDishesTN = await warehouseApi.getProcessedDishes({ branchId: 1 });
+  assert(
+    processedDishesTN.length >= 8,
+    'SUITE 19.2 Processed Dishes Count in Finished Dishes Inventory',
+    'Kho Sau Chế Biến khởi tạo thành công >= 8 món ăn hoàn chỉnh sẵn sàng phục vụ buffet'
+  );
+
+  const cuaMeDish = processedDishesTN.find(d => d.dishCode === 'DISH-CUA-ME');
+  assert(
+    !!cuaMeDish && cuaMeDish.quantity > 0 && cuaMeDish.unit === 'đĩa',
+    'SUITE 19.2 Processed Dish Details Integrity',
+    'Món Cua sốt me tồn tại trong Kho Sau Chế Biến với số lượng tồn đĩa khả dụng'
+  );
+
+  // Tăng tồn khi Nút 2 Cân Mẻ nấu xong (addProcessedDishStock)
+  const stockBeforeAdd = cuaMeDish!.quantity;
+  const updatedAfterBatch = await warehouseApi.addProcessedDishStock({
+    dishCode: 'DISH-CUA-ME',
+    branchId: 1,
+    quantity: 5,
+  });
+  assert(
+    updatedAfterBatch.quantity === stockBeforeAdd + 5,
+    'SUITE 19.2 Batch Completion Adds Stock to Finished Dishes Inventory',
+    'Nút 2 hoàn tất mẻ: tự động tăng +5 đĩa vào Kho Sau Chế Biến của món ăn tương ứng'
+  );
+
+  // Khấu trừ tồn khi Nút 3 Ra Line (deductProcessedDishStock)
+  const deductResult = await warehouseApi.deductProcessedDishStock({
+    dishCode: 'DISH-CUA-ME',
+    branchId: 1,
+    quantity: 2,
+  });
+  assert(
+    deductResult.success && deductResult.remainingStock === stockBeforeAdd + 3,
+    'SUITE 19.2 Ra Line Deducts Stock from Finished Dishes Inventory',
+    'Nút 3 ra line: khấu trừ chính xác 2 đĩa từ Kho Sau Chế Biến'
+  );
+
+  // Chặn xuất âm nếu ra line vượt tồn kho sau chế biến
+  let outOfStockBlocked = false;
+  try {
+    await warehouseApi.deductProcessedDishStock({
+      dishCode: 'DISH-CUA-ME',
+      branchId: 1,
+      quantity: 999,
+    });
+  } catch (err: any) {
+    outOfStockBlocked = true;
+  }
+  assert(
+    outOfStockBlocked,
+    'SUITE 19.2 Ra Line Overdraft Prevention in Finished Dishes Inventory',
+    'Chặn cứng không cho ra line nếu số lượng yêu cầu vượt quá tồn khả dụng trong Kho Sau Chế Biến'
+  );
+
+  // 19.3: TASK-FLOW-06: Hợp nhất Cân Hàng Mới Về & Xóa nút Nhập Hàng cũ
+  const warehouseSource = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/warehouse/WarehouseModule.tsx'),
+    'utf-8'
+  );
+  assert(
+    !warehouseSource.includes('>+ NHẬP KHO<') && !warehouseSource.includes('>+ NHẬP HÀNG<'),
+    'SUITE 19.3 Removed Old Redundant Nhập Hàng Buttons',
+    'Đã xóa bỏ hoàn toàn nút "+ NHẬP HÀNG / + NHẬP KHO" cũ trong WarehouseModule.tsx'
+  );
+
+  assert(
+    warehouseSource.includes('⚖️ CÂN HÀNG MỚI VỀ') &&
+    warehouseSource.includes('supplierSearchKeyword') &&
+    warehouseSource.includes('filteredSuppliers'),
+    'SUITE 19.3 Unified Can Hang Moi Ve with Search-as-you-type NCC',
+    'Hợp nhất duy nhất nút "⚖️ CÂN HÀNG MỚI VỀ" với tính năng Search-as-you-type tìm kiếm NCC nhanh'
+  );
+
+  // 19.4: TASK-FLOW-07: Phiếu Xuất Hủy Lô Hàng (Hủy một phần, không hủy cả lô)
+  // Tạo lô hàng 50kg cua
+  const lot50Doc = await warehouseApi.createDocument({
+    branchId: 1,
+    branchCode: 'TN',
+    docType: 'NHAP',
+    supplierId: 1,
+    items: [
+      {
+        itemId: 5,
+        quantity: 50.0,
+        supplierReportedWeight: 50.0,
+        actualWeight: 50.0,
+        unitPrice: 420000,
+        preProcessingCategory: 'VC_CUA_GHE',
+      },
+    ],
+  });
+  const createdLots = await db.inventoryLots.where('itemId').equals(5).toArray();
+  const testLot50 = createdLots[createdLots.length - 1];
+  assert(
+    !!testLot50 && testLot50.currentStock === 50.0,
+    'SUITE 19.4 Setup 50kg Lot for Partial Scrap Verification',
+    'Khởi tạo lô 50kg cua thành công vào Kho Trước Chế Biến'
+  );
+
+  // Xuất hủy 2.5kg trên lô 50kg cua chết/ngộp
+  const docHuy2_5 = await warehouseApi.createDocument({
+    branchId: 1,
+    branchCode: 'TN',
+    docType: 'HUY',
+    status: 'HOAN_THANH',
+    supplierId: 1,
+    note: 'Hủy 2.5kg cua chết ngộp trong lô 50kg',
+    items: [
+      {
+        itemId: 5,
+        batchId: testLot50.id,
+        quantity: 2.5,
+        actualWeight: 2.5,
+        unitPrice: 420000,
+        lossCategory: 'HAI_SAN_CHET_NCC',
+        reason: '3 con cua chết ngộp khi giao nhận',
+      },
+    ],
+  });
+
+  const lotAfterScrap = await db.inventoryLots.get(testLot50.id);
+  assert(
+    !!lotAfterScrap && lotAfterScrap.currentStock === 47.5,
+    'SUITE 19.4 Partial Lot Scrap Without Deleting Entire Lot',
+    'Xuất hủy 2.5kg trên lô 50kg: trừ chính xác 2.5kg, tồn lô còn lại đúng 47.5kg (KHÔNG hủy toàn bộ lô hàng)'
+  );
+
+  // -----------------------------------------------------------------
+  // 19.5: TASK-FLOW-02: NÚT 1 (LẤY HÀNG TỪ KHO TRƯỚC CHẾ BIẾN)
+  // -----------------------------------------------------------------
+  console.log('\n📦 SUITE 19.5: Nút 1 Take-Out from Pre-Processing Inventory');
+
+  // Lọc theo 11 nhóm Kho Trước Chế Biến
+  const itemsCuaGhe = await kitchenApi.getPreProcessingItems(1, 'VC_CUA_GHE');
+  assert(
+    itemsCuaGhe.length > 0 && itemsCuaGhe.some((i) => i.id === 5),
+    'SUITE 19.5 Filter Pre-Processing Inventory by VC_CUA_GHE Category',
+    'Lọc chính xác các nguyên liệu thuộc nhóm VC_CUA_GHE trong Kho Trước Chế Biến'
+  );
+
+  const itemsThit = await kitchenApi.getPreProcessingItems(1, 'THIT');
+  assert(
+    itemsThit.length > 0 && itemsThit.some((i) => i.id === 4),
+    'SUITE 19.5 Filter Pre-Processing Inventory by THIT Category',
+    'Lọc chính xác các nguyên liệu thuộc nhóm THIT trong Kho Trước Chế Biến'
+  );
+
+  // Đa dạng ĐVT (kg, con, cái, lít, gói)
+  // Thực hiện lấy hàng với ĐVT 'con'
+  const crabStockBeforeTakeOut = await kitchenApi.getItemAvailableStock(5, 1);
+  const takeOutResult = await kitchenApi.recordTakeOut({
+    itemId: 5,
+    quantity: 3,
+    unit: 'con',
+    branchId: 1,
+    note: 'Lấy 3 con cua chế biến cua sốt me',
+  });
+  const crabStockAfterTakeOut = await kitchenApi.getItemAvailableStock(5, 1);
+  assert(
+    takeOutResult.success && crabStockAfterTakeOut === Number((crabStockBeforeTakeOut - 3).toFixed(2)),
+    'SUITE 19.5 Nút 1 Record Take-Out with Custom Unit (con) & Deduct Pre-Processing Stock',
+    'Nút 1 lấy hàng hỗ trợ ĐVT "con", trừ chính xác 3 con cua khỏi tồn kho trước chế biến'
+  );
+
+  // Chặn vượt tồn kho khả dụng
+  let takeOutOverdraftBlocked = false;
+  try {
+    await kitchenApi.recordTakeOut({
+      itemId: 5,
+      quantity: 9999,
+      unit: 'kg',
+      branchId: 1,
+    });
+  } catch (err: any) {
+    takeOutOverdraftBlocked = err.message.includes('vượt quá tồn kho khả dụng');
+  }
+  assert(
+    takeOutOverdraftBlocked,
+    'SUITE 19.5 Nút 1 Overdraft Prevention in Pre-Processing Inventory',
+    'Nút 1 chặn cứng không cho lấy hàng vượt quá tồn kho khả dụng'
+  );
+
+  // -----------------------------------------------------------------
+  // 19.6: TASK-FLOW-03: NÚT 2 (CÂN MẺ & TỰ ĐỘNG NHẬP KHO SAU CHẾ BIẾN)
+  // -----------------------------------------------------------------
+  console.log('\n⚖️ SUITE 19.6: Nút 2 Batch Weighing & Auto-Stocking Finished Dishes');
+
+  // Khởi tạo mẻ chế biến Cua Cà Mau -> Cua rang me
+  const startBatchRes = await kitchenApi.startBatch({
+    itemId: 5,
+    inputWeight: 10.0,
+    unit: 'kg',
+    note: 'Mẻ cua rang me sốt trứng muối',
+    forceSecondBatch: true,
+  });
+  assert(
+    startBatchRes.success && startBatchRes.data.status === 'DANG_LAM',
+    'SUITE 19.6 Nút 2 Start Batch Initialized',
+    'Khởi tạo mẻ chế biến thành công ở trạng thái DANG_LAM'
+  );
+
+  // Lấy tồn đĩa trước khi cân xong mẻ của món DISH-CUA-ME
+  const cuaDishBefore = await db.processedDishes.where('dishCode').equals('DISH-CUA-ME').filter((d) => d.branchId === 1).first();
+  const cuaQtyBefore = cuaDishBefore?.quantity || 0;
+
+  // Hoàn tất cân mẻ với 8.5kg thành phẩm (hao hụt 15%)
+  const finishBatchRes = await kitchenApi.finishBatch({
+    batchId: startBatchRes.data.id,
+    outputWeight: 8.5,
+    scalePhotoUrl: 'data:image/jpeg;base64,mockScalePhotoData',
+    requireScalePhoto: true,
+  });
+  assert(
+    finishBatchRes.success && finishBatchRes.data.status === 'HOAN_THANH',
+    'SUITE 19.6 Nút 2 Finish Batch with Scale Photo Completed',
+    'Cân mẻ hoàn tất thành công kèm ảnh chụp bàn cân điện tử'
+  );
+
+  // Kiểm tra tự động tăng tồn Kho Sau Chế Biến
+  const cuaDishAfter = await db.processedDishes.where('dishCode').equals('DISH-CUA-ME').filter((d) => d.branchId === 1).first();
+  assert(
+    !!cuaDishAfter && cuaDishAfter.quantity === Number((cuaQtyBefore + 8.5).toFixed(2)),
+    'SUITE 19.6 Auto Stock Increase in Finished Dishes Inventory (Kho Sau Chế Biến)',
+    'Nút 2 hoàn tất cân mẻ tự động tăng +8.5 đĩa vào Kho Sau Chế Biến của món ăn hoàn chỉnh'
+  );
+
+  // -----------------------------------------------------------------
+  // 19.7: TASK-FLOW-04: NÚT 3 (RA LINE KHẤU TRỪ KHO SAU CHẾ BIẾN & CẢNH BÁO HẾT KHO)
+  // -----------------------------------------------------------------
+  console.log('\n🍽️ SUITE 19.7: Nút 3 Ra Line Buffet & Finished Dishes Deduction');
+
+  const stockBeforeRaLine = cuaDishAfter!.quantity;
+  const lineItemRes = await kitchenApi.recordLineItem({
+    dishCode: 'DISH-CUA-ME',
+    quantity: 3,
+    branchId: 1,
+    requestId: 'req-line-test-1',
+  });
+  const cuaDishAfterLine = await db.processedDishes.where('dishCode').equals('DISH-CUA-ME').filter((d) => d.branchId === 1).first();
+  assert(
+    lineItemRes.success && cuaDishAfterLine?.quantity === Number((stockBeforeRaLine - 3).toFixed(2)),
+    'SUITE 19.7 Nút 3 Ra Line Deducts Finished Dishes Inventory',
+    'Nút 3 ra line 3 đĩa: khấu trừ chính xác 3 đĩa trong Kho Sau Chế Biến'
+  );
+
+  // Cảnh báo hết hàng / yêu cầu làm mẻ Nút 2 khi ra line vượt tồn
+  let raLineOverdraftMsg = '';
+  try {
+    await kitchenApi.recordLineItem({
+      dishCode: 'DISH-CUA-ME',
+      quantity: 9999,
+      branchId: 1,
+    });
+  } catch (err: any) {
+    raLineOverdraftMsg = err.message;
+  }
+  assert(
+    raLineOverdraftMsg.includes('Kho Sau Chế Biến không đủ món') &&
+    raLineOverdraftMsg.includes('Vui lòng nấu và cân mẻ tại NÚT 2'),
+    'SUITE 19.7 Nút 3 Insufficient Stock Alert Demands Nút 2 Batch',
+    'Nút 3 ra line vượt tồn kho sau chế biến bị chặn và cảnh báo yêu cầu làm mẻ tại Nút 2'
+  );
+
+  // -----------------------------------------------------------------
+  // 19.8: TASK-FLOW-05: NÚT 5 (TẠO ĐỒ ĂN THỪA CUỐI CA & BẮT BUỘC ẢNH CHỤP)
+  // -----------------------------------------------------------------
+  console.log('\n🗑️ SUITE 19.8: Nút 5 Leftover Waste at Shift End with Mandatory Scale Photo');
+
+  // Chặn lưu khi thiếu ảnh chụp bàn cân / thức ăn thừa
+  let missingPhotoBlocked = false;
+  try {
+    await kitchenApi.recordLeftoverWaste({
+      itemName: 'Cua rang me sốt trứng muối',
+      quantity: 1.5,
+      unit: 'đĩa',
+      locationType: 'LINE',
+      reason: 'Khách dùng không hết cuối ca tối',
+      imageUrl: '', // Thiếu ảnh
+      branchId: 1,
+    });
+  } catch (err: any) {
+    missingPhotoBlocked = err.message.includes('BẮT BUỘC phải chụp ảnh');
+  }
+  assert(
+    missingPhotoBlocked,
+    'SUITE 19.8 Nút 5 Missing Photo Strictly Blocked with Anti-Fraud Alert',
+    'Nút 5 chặn lưu tuyệt đối khi thiếu ảnh chụp bàn cân thức ăn thừa'
+  );
+
+  // Lưu thành công khi có ảnh chụp đính kèm
+  const leftoverRes = await kitchenApi.recordLeftoverWaste({
+    itemName: 'Cua rang me sốt trứng muối',
+    quantity: 1.5,
+    unit: 'đĩa',
+    locationType: 'LINE',
+    reason: 'Khách dùng không hết cuối ca tối',
+    imageUrl: 'data:image/jpeg;base64,mockLeftoverPlatePhotoData',
+    branchId: 1,
+    shift: 'CA_TOI',
+  });
+  const savedLeftover = await db.dailyRemaining.filter((r: any) => r.itemName === 'Cua rang me sốt trứng muối').first();
+  const leftoverDoc = await db.warehouseDocuments.where('docType').equals('DO_AN_THUA').first();
+  assert(
+    leftoverRes.success &&
+    !!savedLeftover &&
+    savedLeftover.quantity === 1.5 &&
+    !!leftoverDoc &&
+    leftoverDoc.warehouseLocation === 'LINE_BUFFET',
+    'SUITE 19.8 Nút 5 Valid Photo Saved to Daily Remaining & DO_AN_THUA Stock Doc',
+    'Nút 5 lưu thành công đồ ăn thừa vào db.dailyRemaining và tự động tạo chứng từ DO_AN_THUA'
+  );
+
+  // -----------------------------------------------------------------
+  // 19.9: KIỂM THỬ GIAO DIỆN BẾP 5 NÚT CÔNG THÁI HỌC (TASK-FLOW-02 -> 05)
+  // -----------------------------------------------------------------
+  console.log('\n📱 SUITE 19.9: Kitchen 5-Button Touch-First UI Verification');
+
+  const kitchen5BtnSource = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/kitchen/KitchenModule.tsx'),
+    'utf-8'
+  );
+
+  const hasAll5Buttons =
+    kitchen5BtnSource.includes('Nút 1') &&
+    kitchen5BtnSource.includes('LẤY HÀNG') &&
+    kitchen5BtnSource.includes('Nút 2') &&
+    kitchen5BtnSource.includes('CHẾ BIẾN MẺ') &&
+    kitchen5BtnSource.includes('Nút 3') &&
+    kitchen5BtnSource.includes('RA LINE (+1)') &&
+    kitchen5BtnSource.includes('Nút 4') &&
+    kitchen5BtnSource.includes('BÁO HỎNG') &&
+    kitchen5BtnSource.includes('Nút 5') &&
+    kitchen5BtnSource.includes('ĐỒ ĂN THỪA CUỐI CA');
+
+  assert(
+    hasAll5Buttons,
+    'SUITE 19.9 Kitchen 5-Button Action Cluster in KitchenModule UI',
+    'Giao diện KitchenModule trang bị đầy đủ 5 nút lớn cảm ứng: Nút 1 Lấy Hàng, Nút 2 Chế Biến Mẻ, Nút 3 Ra Line, Nút 4 Báo Hỏng, Nút 5 Đồ Ăn Thừa'
+  );
+
+  const hasLeftoverModalWithPhoto =
+    kitchen5BtnSource.includes('NÚT 5: TẠO ĐỒ ĂN THỪA CUỐI CA') &&
+    kitchen5BtnSource.includes('leftoverPhoto') &&
+    kitchen5BtnSource.includes('ẢNH CHỤP MẶT BÀN CÂN / THỨC ĂN THỪA (BẮT BUỘC)') &&
+    kitchen5BtnSource.includes('recordLeftoverWaste');
+
+  assert(
+    hasLeftoverModalWithPhoto,
+    'SUITE 19.9 Nút 5 Leftover Modal with Photo Attachment & Compression',
+    'Modal Nút 5 tích hợp đầy đủ trường phân loại vị trí, lý do, và cơ chế chụp/nén ảnh bàn cân chống gian lận'
   );
 
   console.log('\n======================================================');

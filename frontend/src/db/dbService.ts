@@ -27,12 +27,13 @@ import {
   SEED_DAILY_MEALS,
   SEED_RECONCILIATION_PERIODS,
   SEED_DEBT_ADJUSTMENTS,
+  SEED_PROCESSED_DISHES,
 } from './seedData';
 
 /**
  * Phiên bản dữ liệu mẫu (Cập nhật phiên bản sẽ kích hoạt tự động reset IndexedDB đồng bộ)
  */
-export const SEED_DATA_VERSION = 'v2026_11_21_sprint_kho_v1';
+export const SEED_DATA_VERSION = 'v2026_11_22_dual_inventory_v1';
 
 let memorySeedVersion: string | null = null;
 
@@ -219,6 +220,7 @@ export async function resetToSeedData(): Promise<void> {
       db.dailyMeals,
       db.debtAdjustments,
       db.reconciliationPeriods,
+      db.processedDishes,
     ],
     async () => {
       await db.branches.clear();
@@ -248,6 +250,7 @@ export async function resetToSeedData(): Promise<void> {
       await db.dailyMeals.clear();
       await db.debtAdjustments.clear();
       await db.reconciliationPeriods.clear();
+      await db.processedDishes.clear();
 
       await populateAllSeedData();
     }
@@ -284,4 +287,5 @@ async function populateAllSeedData(): Promise<void> {
   await db.dailyMeals.bulkAdd(SEED_DAILY_MEALS);
   await db.debtAdjustments.bulkAdd(SEED_DEBT_ADJUSTMENTS);
   await db.reconciliationPeriods.bulkAdd(SEED_RECONCILIATION_PERIODS);
+  await db.processedDishes.bulkAdd(SEED_PROCESSED_DISHES);
 }

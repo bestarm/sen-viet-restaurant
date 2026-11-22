@@ -57,6 +57,10 @@ import {
   WAREHOUSE_LOCATIONS,
   getItemWarehouseLocation,
   PhysicalWarehouseLocation,
+  PreProcessingCategory,
+  PRE_PROCESSING_CATEGORIES,
+  PRE_PROCESSING_CATEGORY_MAP,
+  getItemPreProcessingCategory,
 } from '../../api/warehouse';
 import { kitchenApi, Item } from '../../api/kitchen';
 import { compressImage, CompressionResult } from '../../utils/imageCompressor';
@@ -262,6 +266,8 @@ export const WarehouseModule: React.FC = () => {
   const [showDocModal, setShowDocModal] = useState<boolean>(false);
   const [docType, setDocType] = useState<'NHAP' | 'XUAT_CHUYEN' | 'HUY'>('NHAP');
   const [selectedSupplierId, setSelectedSupplierId] = useState<number | undefined>(undefined);
+  const [supplierSearchKeyword, setSupplierSearchKeyword] = useState<string>('');
+  const [selectedPreCategory, setSelectedPreCategory] = useState<PreProcessingCategory>('HS_CHINH');
   const [docNote, setDocNote] = useState<string>('');
   const [docItems, setDocItems] = useState<
     {
@@ -276,6 +282,7 @@ export const WarehouseModule: React.FC = () => {
       shortageAmount?: number;
       lossCategory?: 'HAI_SAN_CHET_NCC' | 'HONG_BAO_QUAN_KHO' | 'BEP_LAM_HONG' | string;
       reasonDetail?: string;
+      preProcessingCategory?: PreProcessingCategory;
     }[]
   >([]);
   const [docImages, setDocImages] = useState<CompressionResult[]>([]);
@@ -283,6 +290,24 @@ export const WarehouseModule: React.FC = () => {
   const [selectedWarehouseLocation, setSelectedWarehouseLocation] = useState<string>('KHO_KHO');
   const [isSubmittingDoc, setIsSubmittingDoc] = useState<boolean>(false);
   const docFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Search-as-you-type cho Nhà Cung Cấp (TASK-FLOW-06)
+  const filteredSuppliers = useMemo(() => {
+    if (!supplierSearchKeyword || !supplierSearchKeyword.trim()) {
+      return suppliers;
+    }
+    const q = supplierSearchKeyword.trim().toLowerCase();
+    return suppliers.filter(
+      (s) =>
+        s.supplierName.toLowerCase().includes(q) ||
+        s.supplierCode.toLowerCase().includes(q) ||
+        (s.phone && s.phone.includes(q))
+    );
+  }, [suppliers, supplierSearchKeyword]);
+
+  const selectedSupplier = useMemo(() => {
+    return suppliers.find((s) => s.id === selectedSupplierId);
+  }, [suppliers, selectedSupplierId]);
 
   // TASK-PC-07: Phím tắt PC bàn phím cứng (Escape đóng modal)
   useEffect(() => {
@@ -472,6 +497,7 @@ export const WarehouseModule: React.FC = () => {
   const handleOpenDocModal = (type: 'NHAP' | 'XUAT_CHUYEN' | 'HUY') => {
     setDocType(type);
     setSelectedSupplierId(suppliers.length > 0 ? suppliers[0].id : undefined);
+    setSupplierSearchKeyword('');
     setSelectedWarehouseLocation(type === 'XUAT_CHUYEN' ? 'KHO_BEP' : 'KHO_KHO');
     setDocNote(
       type === 'XUAT_CHUYEN'
@@ -485,6 +511,13 @@ export const WarehouseModule: React.FC = () => {
       const defaultItemId = buffetItems[0].id;
       const itemBatches = batches.filter((b) => b.itemId === defaultItemId && b.currentStock > 0);
       const defaultBatchId = itemBatches.length > 0 ? itemBatches[0].id : undefined;
+      const defaultPre = getItemPreProcessingCategory(
+        buffetItems[0].itemCode,
+        buffetItems[0].category,
+        (buffetItems[0] as any).costGroup,
+        buffetItems[0].itemName
+      );
+      setSelectedPreCategory(defaultPre);
 
       setDocItems([
         {
@@ -499,6 +532,7 @@ export const WarehouseModule: React.FC = () => {
           expiryDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
           lossCategory: type === 'HUY' ? 'HAI_SAN_CHET_NCC' : undefined,
           reasonDetail: '',
+          preProcessingCategory: defaultPre,
         },
       ]);
     } else {
@@ -512,6 +546,12 @@ export const WarehouseModule: React.FC = () => {
     const defaultItemId = buffetItems[0].id;
     const itemBatches = batches.filter((b) => b.itemId === defaultItemId && b.currentStock > 0);
     const defaultBatchId = itemBatches.length > 0 ? itemBatches[0].id : undefined;
+    const defaultPre = getItemPreProcessingCategory(
+      buffetItems[0].itemCode,
+      buffetItems[0].category,
+      (buffetItems[0] as any).costGroup,
+      buffetItems[0].itemName
+    );
 
     setDocItems([
       ...docItems,
@@ -527,6 +567,7 @@ export const WarehouseModule: React.FC = () => {
         expiryDate: new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0],
         lossCategory: docType === 'HUY' ? 'HAI_SAN_CHET_NCC' : undefined,
         reasonDetail: '',
+        preProcessingCategory: defaultPre,
       },
     ]);
   };
@@ -543,6 +584,13 @@ export const WarehouseModule: React.FC = () => {
       const diff = updated[index].weightDiff || 0;
       const itemBatches = batches.filter((b) => b.itemId === Number(value) && b.currentStock > 0);
       const newBatchId = itemBatches.length > 0 ? itemBatches[0].id : undefined;
+      const detectedPre = getItemPreProcessingCategory(
+        selectedItem?.itemCode,
+        selectedItem?.category,
+        (selectedItem as any)?.costGroup,
+        selectedItem?.itemName
+      );
+      setSelectedPreCategory(detectedPre);
 
       updated[index] = {
         ...updated[index],
@@ -550,6 +598,7 @@ export const WarehouseModule: React.FC = () => {
         batchId: newBatchId,
         unitPrice: newPrice,
         shortageAmount: diff < 0 ? Math.round(Math.abs(diff) * newPrice) : 0,
+        preProcessingCategory: detectedPre,
       };
     } else if (field === 'supplierReportedWeight') {
       const val = typeof value === 'string' ? value.replace(',', '.') : value;
@@ -688,8 +737,31 @@ export const WarehouseModule: React.FC = () => {
 
     // KHO-03: BẮT BUỘC CHỤP ẢNH BÀN CÂN / CHỨNG TỪ (*)
     if (docImages.length === 0) {
-      showNotice('error', '⚠️ Vui lòng chụp ảnh bàn cân hoặc phiếu giao hàng trước khi lưu!');
+      if (docType === 'HUY') {
+        showNotice('error', '⚠️ Bắt buộc chụp/tải ảnh bàn cân hoặc thực phẩm hỏng đối với Phiếu Xuất Hủy!');
+      } else {
+        showNotice('error', '⚠️ Bắt buộc chụp/tải ảnh bàn cân hoặc phiếu giao hàng trước khi lưu!');
+      }
       return;
+    }
+
+    // Bắt buộc chọn NCC khi Cân hàng mới về
+    if (docType === 'NHAP' && !selectedSupplierId) {
+      showNotice('error', '⚠️ Vui lòng chọn Nhà cung cấp giao hàng!');
+      return;
+    }
+
+    // Bắt buộc nhập chi tiết lý do khi xuất hủy
+    if (docType === 'HUY') {
+      for (const item of docItems) {
+        if (!item.reasonDetail || !item.reasonDetail.trim()) {
+          showNotice(
+            'error',
+            '⚠️ Bắt buộc nhập chi tiết lý do xuất hủy thực phẩm cho tất cả các dòng hàng!'
+          );
+          return;
+        }
+      }
     }
 
     // Kiểm tra mọi dòng phải có quantity/thực cân > 0
@@ -800,6 +872,7 @@ export const WarehouseModule: React.FC = () => {
             batchId: item.batchId,
             lossCategory: item.lossCategory || (docType === 'HUY' ? 'HAI_SAN_CHET_NCC' : undefined),
             reason: item.reasonDetail || undefined,
+            preProcessingCategory: item.preProcessingCategory || selectedPreCategory,
             warehouseLocation: selectedWarehouseLocation,
           };
         }),
@@ -1204,7 +1277,7 @@ export const WarehouseModule: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Nút Cân Hàng Mới Về - Tự động nổi bật đối với Bếp viên */}
+            {/* Nút Cân Hàng Mới Về - Thao tác nhập hàng duy nhất vào Kho Trước Chế Biến */}
             <button
               onClick={() => handleOpenDocModal('NHAP')}
               className={`btn-touch rounded-xl font-black text-xs flex items-center gap-2 shadow-lg active:scale-95 transition-all ${
@@ -1216,16 +1289,6 @@ export const WarehouseModule: React.FC = () => {
               <Scale className={`h-4 w-4 ${isKitchenPure ? 'h-5 w-5 text-emerald-950' : 'text-slate-950'}`} />
               <span>⚖️ CÂN HÀNG MỚI VỀ</span>
             </button>
-
-            {!isKitchenPure && (
-              <button
-                onClick={() => handleOpenDocModal('NHAP')}
-                className="btn-touch px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 active:scale-95 transition-all"
-              >
-                <PackagePlus className="h-4 w-4" />
-                <span>+ NHẬP KHO</span>
-              </button>
-            )}
 
             <button
               onClick={() => handleOpenDocModal('HUY')}
@@ -1798,10 +1861,10 @@ export const WarehouseModule: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleOpenDocModal('NHAP')}
-                  className="btn-touch px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                  className="btn-touch px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm"
                 >
-                  <Plus className="h-4 w-4" />
-                  <span>+ Lập Phiếu Nhập</span>
+                  <Scale className="h-4 w-4" />
+                  <span>⚖️ Cân Hàng Mới Về</span>
                 </button>
                 <button
                   onClick={() => handleOpenDocModal('XUAT_CHUYEN')}
@@ -2478,9 +2541,9 @@ export const WarehouseModule: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 flex-shrink-0">
               <div className="flex items-center gap-2 font-black text-base">
                 {docType === 'NHAP' ? (
-                  <div className="flex items-center gap-2 text-indigo-700">
-                    <PackagePlus className="h-6 w-6" />
-                    <span>LẬP PHIẾU NHẬP KHO & CÂN THỰC TẾ (2 CỘT SỐ LƯỢNG)</span>
+                  <div className="flex items-center gap-2 text-emerald-800">
+                    <Scale className="h-6 w-6 text-emerald-600" />
+                    <span>⚖️ CÂN HÀNG MỚI VỀ (NHẬP KHO TRƯỚC CHẾ BIẾN - 2 CỘT KHỐI LƯỢNG)</span>
                   </div>
                 ) : docType === 'XUAT_CHUYEN' ? (
                   <div className="flex items-center gap-2 text-amber-700">
@@ -2490,7 +2553,7 @@ export const WarehouseModule: React.FC = () => {
                 ) : (
                   <div className="flex items-center gap-2 text-rose-700">
                     <Trash2 className="h-6 w-6" />
-                    <span>LẬP PHIẾU BÁO HỎNG & XUẤT HỦY (4 NHÓM LÝ DO & BẮT ĐỀN NCC)</span>
+                    <span>LẬP PHIẾU XUẤT HỦY LÔ HÀNG (HỦY MỘT PHẦN LÔ - BẮT BUỘC ẢNH & LÝ DO)</span>
                   </div>
                 )}
               </div>
@@ -2514,38 +2577,68 @@ export const WarehouseModule: React.FC = () => {
                 {/* ========================================================= */}
                 <div className="lg:col-span-7 space-y-3.5">
                   {docType === 'NHAP' && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-emerald-50/60 border border-emerald-200">
                       <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          CHỌN NHÀ CUNG CẤP GIAO HÀNG
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-bold text-slate-700">
+                            NHÀ CUNG CẤP GIAO HÀNG <span className="text-rose-500">*</span>
+                          </label>
+                          {selectedSupplier && (
+                            <span className="text-[10px] font-mono font-bold text-emerald-800 bg-white px-1.5 py-0.5 rounded border border-emerald-300">
+                              {selectedSupplier.supplierCode}
+                            </span>
+                          )}
+                        </div>
+                        {/* Search-as-you-type NCC */}
+                        <div className="relative mb-1.5">
+                          <Search className="h-3.5 w-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                          <input
+                            type="text"
+                            placeholder="Gõ tìm NCC (tên, mã, SĐT)..."
+                            value={supplierSearchKeyword}
+                            onChange={(e) => setSupplierSearchKeyword(e.target.value)}
+                            className="w-full h-8 pl-7 pr-2 rounded-lg border border-slate-300 text-xs focus:ring-2 focus:ring-emerald-500 bg-white"
+                          />
+                        </div>
                         <select
                           value={selectedSupplierId || ''}
                           onChange={(e) => setSelectedSupplierId(Number(e.target.value) || undefined)}
-                          className="w-full h-10 px-3 rounded-xl border border-slate-300 font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 bg-white"
+                          className="w-full h-9 px-2 rounded-lg border border-emerald-300 font-bold text-xs text-slate-800 focus:ring-2 focus:ring-emerald-500 bg-white"
                         >
-                          {suppliers.map((s) => (
+                          <option value="">-- Chọn Nhà Cung Cấp ({filteredSuppliers.length} NCC) --</option>
+                          {filteredSuppliers.map((s) => (
                             <option key={s.id} value={s.id}>
-                              {s.supplierName} ({s.supplierCode})
+                              {s.supplierName} ({s.supplierCode}) {s.phone ? `• ${s.phone}` : ''}
                             </option>
                           ))}
                         </select>
                       </div>
                       <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">
-                          VỊ TRÍ KHO VẬT LÝ LƯU TRỮ (KHO-11)
+                        <label className="block text-xs font-bold text-slate-700 mb-1">
+                          LƯU VÀO KHO TRƯỚC CHẾ BIẾN (11 NHÓM QUY CHUẨN)
                         </label>
                         <select
-                          value={selectedWarehouseLocation}
-                          onChange={(e) => setSelectedWarehouseLocation(e.target.value)}
-                          className="w-full h-10 px-3 rounded-xl border border-indigo-300 font-bold text-indigo-900 focus:ring-2 focus:ring-indigo-500 bg-indigo-50/70"
+                          value={selectedPreCategory}
+                          onChange={(e) => {
+                            const val = e.target.value as PreProcessingCategory;
+                            setSelectedPreCategory(val);
+                            if (val === 'BAR') setSelectedWarehouseLocation('KHO_BAR');
+                            else if (val === 'THIT') setSelectedWarehouseLocation('KHO_DONG_LANH');
+                            else if (val === 'VC_CUA_GHE' || val === 'VC_VO_CUNG' || val === 'HS_CHINH') setSelectedWarehouseLocation('KHO_BE_SONG');
+                            else if (val === 'RAU' || val === 'DO_AN_NHAN_VIEN') setSelectedWarehouseLocation('KHO_BEP');
+                            else setSelectedWarehouseLocation('KHO_KHO');
+                          }}
+                          className="w-full h-9 px-2 rounded-lg border border-indigo-300 font-bold text-xs text-indigo-950 focus:ring-2 focus:ring-indigo-500 bg-white"
                         >
-                          {WAREHOUSE_LOCATIONS.filter((l) => l.id !== 'ALL').map((loc) => (
-                            <option key={loc.id} value={loc.id}>
-                              {loc.icon} {loc.name}
+                          {PRE_PROCESSING_CATEGORIES.map((cat) => (
+                            <option key={cat.code} value={cat.code}>
+                              {cat.icon} {cat.name}
                             </option>
                           ))}
                         </select>
+                        <div className="text-[11px] text-slate-500 mt-1.5 italic flex items-center gap-1">
+                          <span>📦 Hàng mới cân sẽ được lưu trực tiếp vào Kho Trước Chế Biến ({PRE_PROCESSING_CATEGORY_MAP[selectedPreCategory]}).</span>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -2621,11 +2714,11 @@ export const WarehouseModule: React.FC = () => {
                             </select>
                           </div>
 
-                          {/* Chọn Lô Hàng liên kết (cho phiếu hủy bắt đền NCC) */}
+                          {/* Chọn Lô Hàng liên kết chỉ định hủy một phần (TASK-FLOW-07) */}
                           {docType === 'HUY' && (
                             <div className="col-span-4">
                               <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">
-                                Liên kết Lô nhập (để bắt đền NCC)
+                                Chỉ định Lô hàng cần hủy một phần
                               </span>
                               <select
                                 value={item.batchId || ''}
@@ -2638,10 +2731,10 @@ export const WarehouseModule: React.FC = () => {
                                 }
                                 className="w-full h-9 px-2 rounded-lg border border-slate-300 font-mono text-[11px] text-slate-800 bg-white"
                               >
-                                <option value="">-- Tất cả lô / Tự động trừ --</option>
+                                <option value="">-- Tất cả lô / Tự động trừ FIFO --</option>
                                 {availableBatchesForItem.map((b) => (
                                   <option key={b.id} value={b.id}>
-                                    {b.batchCode} (Tồn: {b.currentStock} {b.unit} • {b.supplierName || 'NCC'})
+                                    Lô {b.batchCode} (Tồn: {b.currentStock} {b.unit} • {b.supplierName || 'NCC'})
                                   </option>
                                 ))}
                               </select>
@@ -2763,10 +2856,10 @@ export const WarehouseModule: React.FC = () => {
                         {/* OBJECTIVE 1: HIỂN THỊ TỒN KHẢ DỤNG & CẢNH BÁO VI PHẠM XUẤT ÂM KHO */}
                         {docType === 'HUY' && (
                           <div className="space-y-1.5 pt-1.5 border-t border-slate-200">
-                            {/* Dòng tồn kho khả dụng hiện tại */}
-                            <div className="flex items-center justify-between text-xs">
+                            {/* Dòng tồn kho khả dụng hiện tại & tính toán trừ một phần lô (TASK-FLOW-07) */}
+                            <div className="flex flex-wrap items-center justify-between text-xs gap-1.5">
                               <div className="inline-flex items-center gap-1.5 font-bold text-slate-700">
-                                <span>📦 Tồn kho khả dụng hiện tại:</span>
+                                <span>📦 Tồn lô/kho hiện tại:</span>
                                 <span
                                   className={`px-2 py-0.5 rounded-full font-black font-mono ${
                                     avail.stock > 0
@@ -2777,11 +2870,21 @@ export const WarehouseModule: React.FC = () => {
                                   {avail.stock.toFixed(2)} {avail.unit}
                                 </span>
                                 {item.batchId && (
-                                  <span className="text-[10px] text-slate-400 font-mono">
-                                    (Lô: {avail.batchName})
+                                  <span className="text-[10px] text-indigo-700 font-mono bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                                    Lô: {avail.batchName}
                                   </span>
                                 )}
                               </div>
+
+                              {enteredQty > 0 && !isOverStock && (
+                                <div className="text-emerald-700 font-semibold text-[11px] bg-emerald-50 px-2.5 py-0.5 rounded-md border border-emerald-200 flex items-center gap-1">
+                                  <span>✓ Hủy <strong>{enteredQty} {avail.unit}</strong> ➔ Tồn lô còn lại:</span>
+                                  <strong className="font-mono text-emerald-950">
+                                    {Math.max(0, avail.stock - enteredQty).toFixed(2)} {avail.unit}
+                                  </strong>
+                                  <span className="text-[10px] text-slate-500 font-normal">(Chỉ trừ phần hủy, không hủy cả lô)</span>
+                                </div>
+                              )}
 
                               {!isKitchenPure && (
                                 <div className="text-slate-500 text-[11px]">
@@ -2967,8 +3070,13 @@ export const WarehouseModule: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-slate-800 uppercase flex items-center gap-1.5">
                       <Camera className="h-4 w-4 text-indigo-600" />
-                      <span>ẢNH HÓA ĐƠN / BÀN CÂN ({docImages.length})</span>
-                      <span className="text-rose-600 font-black">*</span>
+                      <span>
+                        {docType === 'HUY'
+                          ? 'ẢNH BÀN CÂN / THỰC PHẨM HỎNG'
+                          : 'ẢNH HÓA ĐƠN / BÀN CÂN'}{' '}
+                        ({docImages.length})
+                      </span>
+                      <span className="text-rose-600 font-black">* (BẮT BUỘC)</span>
                     </label>
                     <button
                       type="button"
