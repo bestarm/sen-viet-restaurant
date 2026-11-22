@@ -289,6 +289,7 @@ export interface StockLedgerEntry {
   balance: number;
   unit: string;
   partnerOrReason?: string;
+  performer?: string;
   note?: string;
   branchCode?: string;
 }
@@ -1354,6 +1355,7 @@ export const warehouseApi = {
       inQty: number;
       outQty: number;
       changeQty: number;
+      performer?: string;
       note?: string;
       partnerOrReason?: string;
     }[] = [];
@@ -1371,12 +1373,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PNK-${doc.id}`,
             docType: 'NHAP',
-            docTypeName: 'Nhập kho NCC',
+            docTypeName: '📥 Nhập kho NCC',
             date: doc.createdAt || '2026-11-16 08:00:00',
             batchCode: it.batchCode,
             inQty: qty,
             outQty: 0,
             changeQty: qty,
+            performer: doc.createdByName || doc.createdBy || 'Lê Hoàng (Thủ kho)',
             partnerOrReason: doc.supplierName || doc.supplierCode || 'Nhà cung cấp',
             note: doc.note || `Nhập hàng từ ${doc.supplierName || 'NCC'}`,
           });
@@ -1385,12 +1388,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PHK-${doc.id}`,
             docType: 'XUAT_HUY',
-            docTypeName: 'Xuất hủy hỏng',
+            docTypeName: '🗑️ Xuất hủy kho',
             date: doc.createdAt || '2026-11-18 10:00:00',
             batchCode: it.batchCode,
             inQty: 0,
             outQty: qty,
             changeQty: -qty,
+            performer: doc.createdByName || doc.createdBy || 'Lê Hoàng (Quản lý duyệt)',
             partnerOrReason: it.reason || doc.note || 'Xuất hủy hao hụt',
             note: doc.note || 'Phiếu xuất hủy',
           });
@@ -1399,12 +1403,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PXK-CB-${doc.id}`,
             docType: 'XUAT_CHE_BIEN',
-            docTypeName: 'Xuất chế biến',
+            docTypeName: '🍳 Xuất bếp nấu line',
             date: doc.createdAt || '2026-11-17 09:00:00',
             batchCode: it.batchCode,
             inQty: 0,
             outQty: qty,
             changeQty: -qty,
+            performer: doc.createdByName || doc.createdBy || 'NV: bep_tn',
             partnerOrReason: it.reason || doc.note || 'Bếp lấy nguyên liệu chế biến',
             note: doc.note || 'Xuất chế biến bếp',
           });
@@ -1413,12 +1418,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PNK-BTP-${doc.id}`,
             docType: 'NHAP',
-            docTypeName: 'Nhập BTP từ mẻ nấu',
+            docTypeName: '📥 Nhập BTP từ mẻ nấu',
             date: doc.createdAt || '2026-11-17 10:00:00',
             batchCode: it.batchCode,
             inQty: qty,
             outQty: 0,
             changeQty: qty,
+            performer: doc.createdByName || doc.createdBy || 'Bếp viên',
             partnerOrReason: it.reason || doc.note || 'Hoàn tất mẻ nấu',
             note: doc.note || 'Tự động tăng tồn kho bán thành phẩm',
           });
@@ -1427,12 +1433,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PXK-LINE-${doc.id}`,
             docType: 'RA_LINE',
-            docTypeName: 'Ra quầy line phục vụ',
+            docTypeName: '🍽️ Ra quầy line phục vụ',
             date: doc.createdAt || '2026-11-17 11:00:00',
             batchCode: it.batchCode,
             inQty: 0,
             outQty: qty,
             changeQty: -qty,
+            performer: doc.createdByName || doc.createdBy || 'Bếp viên',
             partnerOrReason: 'Quầy line buffet',
             note: doc.note || 'Xuất quầy line buffet',
           });
@@ -1441,12 +1448,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PXK-${doc.id}`,
             docType: 'XUAT_BEP',
-            docTypeName: 'Xuất bếp / Chuyển kho',
+            docTypeName: '🍳 Xuất bếp nấu line',
             date: doc.createdAt || '2026-11-17 09:00:00',
             batchCode: it.batchCode,
             inQty: 0,
             outQty: qty,
             changeQty: -qty,
+            performer: doc.createdByName || doc.createdBy || 'Nguyễn Văn Bếp',
             partnerOrReason: doc.note || 'Xuất bếp chế biến',
             note: doc.note || 'Xuất kho cho bếp',
           });
@@ -1455,12 +1463,13 @@ export const warehouseApi = {
             id: `DOC-${doc.id}-${it.id || 0}`,
             docCode: doc.docCode || `PXK-${doc.id}`,
             docType: 'XUAT_CHUYEN_NOI_BO',
-            docTypeName: 'Xuất chuyển nội bộ (Kho khô ➔ Bếp)',
+            docTypeName: '📦 Xuất chuyển nội bộ (Kho khô ➔ Bếp)',
             date: doc.createdAt || '2026-11-17 09:00:00',
             batchCode: it.batchCode,
             inQty: 0,
             outQty: qty,
             changeQty: -qty,
+            performer: doc.createdByName || doc.createdBy || 'Nguyễn Văn Bếp',
             partnerOrReason: doc.note || 'Chuyển Kho Khô sang Kho Bếp',
             note: doc.note || 'Xuất chuyển nội bộ',
           });
@@ -1472,21 +1481,37 @@ export const warehouseApi = {
     const existingDocCodes = new Set(rawEvents.map((e) => e.docCode));
     const takeOuts = await db.takeOutLogs.toArray();
     for (const log of takeOuts) {
+      if (targetBranchId && log.branchId && log.branchId !== targetBranchId) continue;
       const logItemId = log.item?.id || log.itemId;
-      const expectedCode = `PXK-BEP-${log.id}`;
-      if (logItemId === itemId && !log.isCancelled && !existingDocCodes.has(expectedCode)) {
+      const expectedCode = log.docCode || `PXK-CB-${log.id}`;
+      // Tránh trùng lặp với warehouseDocuments đã add ở trên
+      const isAlreadyIncluded =
+        existingDocCodes.has(expectedCode) ||
+        (log.docCode && existingDocCodes.has(log.docCode)) ||
+        rawEvents.some(
+          (e) =>
+            e.docType === 'XUAT_CHE_BIEN' &&
+            Math.abs(e.outQty - log.quantity) < 0.001 &&
+            (e.date === log.createdAt || e.docCode.includes(String(log.id)))
+        );
+
+      if (logItemId === itemId && !log.isCancelled && !isAlreadyIncluded) {
+        const rawPerf = log.performer || log.staffName || log.createdByName || log.createdBy || 'bep_tn';
+        const perf = rawPerf.startsWith('NV:') ? rawPerf : `NV: ${rawPerf}`;
         rawEvents.push({
           id: `TO-${log.id}`,
           docCode: expectedCode,
           docType: 'XUAT_CHE_BIEN',
-          docTypeName: 'Bếp lấy hàng chế biến',
+          docTypeName: '🍳 Xuất bếp nấu line',
           date: log.createdAt || '2026-11-18 11:30:00',
           inQty: 0,
           outQty: log.quantity,
           changeQty: -log.quantity,
+          performer: perf,
           partnerOrReason: 'Khu vực bếp ra line',
           note: log.note || 'Bếp lấy hàng chế biến ca',
         });
+        existingDocCodes.add(expectedCode);
       }
     }
 
@@ -1503,13 +1528,14 @@ export const warehouseApi = {
           id: `CHK-${check.id}-${it.id || 0}`,
           docCode: check.checkCode || `KK-${check.id}`,
           docType: 'KIEM_KE',
-          docTypeName: `Kiểm kê kho (${check.shift || 'Định kỳ'})`,
+          docTypeName: `🔍 Điều chỉnh kiểm kê (${check.shift || 'Định kỳ'})`,
           date:
             check.createdAt ||
             (check.checkDate ? `${check.checkDate} 12:00:00` : '2026-11-18 12:00:00'),
           inQty: diff > 0 ? diff : 0,
           outQty: diff < 0 ? Math.abs(diff) : 0,
           changeQty: diff,
+          performer: check.checkedByName || check.checkedBy || 'Lê Hoàng & Nguyễn Bá Hoan',
           partnerOrReason:
             it.reason || check.note || (diff < 0 ? 'Thất thoát / hao hụt ca' : 'Khớp số liệu'),
           note: check.note || 'Biên bản kiểm kê kho',
@@ -1527,12 +1553,13 @@ export const warehouseApi = {
           id: `LOT-INIT-${lot.id}`,
           docCode: lot.batchCode || `PNK-INIT-${lot.id}`,
           docType: 'NHAP',
-          docTypeName: 'Nhập kho ban đầu',
+          docTypeName: '📥 Nhập kho ban đầu',
           date: lot.importDate ? `${lot.importDate} 07:00:00` : '2026-11-15 07:00:00',
           batchCode: lot.batchCode,
           inQty: lot.initialQuantity || lot.currentStock || 0,
           outQty: 0,
           changeQty: lot.initialQuantity || lot.currentStock || 0,
+          performer: lot.createdByName || lot.createdBy || 'Lê Hoàng (Thủ kho)',
           partnerOrReason: lot.supplierName || lot.supplierCode || 'Nhà cung cấp',
           note: `Lô nhập ${lot.batchCode} - HSD: ${lot.expiryDate || 'N/A'}`,
         });
@@ -1560,6 +1587,7 @@ export const warehouseApi = {
         changeQty: Number(evt.changeQty.toFixed(2)),
         balance: Number(runningBalance.toFixed(2)),
         unit,
+        performer: evt.performer || 'NV: bep_tn',
         partnerOrReason: evt.partnerOrReason,
         note: evt.note,
         branchCode: targetBranchCode || 'TN',

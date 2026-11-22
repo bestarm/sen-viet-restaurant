@@ -101,6 +101,10 @@ export const WarehouseModule: React.FC = () => {
   // Bếp viên thuần túy: được xem tồn vật lý & cân hàng mới về, ẩn đơn giá & công nợ tài chính nhạy cảm
   const isKitchenPure = isKitchen && !isBranchMgr && !isHeadChef && !isChuChuoi && !isGenAcc && !isBrAcc;
 
+  // TASK-LOGIC-05: Bảo mật tài chính: Ẩn giá tiền đối với Bếp Trưởng, Bếp viên và Nhân viên
+  const isKitchenStaff = isKitchen;
+  const hideFinancials = isHeadChef || isKitchenStaff || (!isChuChuoi && !isGenAcc && !isBrAcc && !isBranchMgr);
+
   // Active top tab - 4 nhóm Cockpit chuẩn hóa
   const [activeTab, setActiveTab] = useState<WarehouseTab>('stock-overview');
   const [stockSubTab, setStockSubTab] = useState<'cards' | 'batches'>('cards');
@@ -1549,7 +1553,7 @@ export const WarehouseModule: React.FC = () => {
               buffetItems={buffetItems}
               documents={documents}
               onOpenDocModal={handleOpenDocModal}
-              hideFinancials={isKitchenPure}
+              hideFinancials={hideFinancials}
             />
           ) : (
             <div className="space-y-4">
@@ -1673,7 +1677,7 @@ export const WarehouseModule: React.FC = () => {
                                 </span>
                               </td>
                               <td className="p-3.5 text-right font-mono">
-                                {isKitchenPure ? (
+                                {hideFinancials ? (
                                   <span className="text-slate-400 text-xs italic">*** (Bảo mật)</span>
                                 ) : (
                                   `${Number(batch.unitPrice).toLocaleString('vi-VN')} đ`
@@ -3220,8 +3224,8 @@ export const WarehouseModule: React.FC = () => {
                         ) : (
                           <th className="p-2.5">Số lượng</th>
                         )}
-                        <th className="p-2.5 text-right font-mono">{isKitchenPure ? 'Ghi Chú' : 'Đơn giá'}</th>
-                        <th className="p-2.5 text-right font-mono">{isKitchenPure ? 'Trạng Thái' : 'Thành tiền'}</th>
+                        <th className="p-2.5 text-right font-mono">{hideFinancials ? 'Ghi Chú' : 'Đơn giá'}</th>
+                        <th className="p-2.5 text-right font-mono">{hideFinancials ? 'Trạng Thái' : 'Thành tiền'}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -3261,7 +3265,7 @@ export const WarehouseModule: React.FC = () => {
                                   }`}
                                 >
                                   {diff !== 0 ? (diff > 0 ? `+${diff}` : `${diff}`) : '0.0'} kg
-                                  {diff < 0 && !isKitchenPure && (
+                                  {diff < 0 && !hideFinancials && (
                                     <div className="text-[10px] text-rose-500 font-normal">
                                       -{(shortage || 0).toLocaleString('vi-VN')} đ
                                     </div>
@@ -3274,14 +3278,14 @@ export const WarehouseModule: React.FC = () => {
                               </td>
                             )}
                             <td className="p-2.5 font-mono text-right">
-                              {isKitchenPure ? (
+                              {hideFinancials ? (
                                 <span className="text-slate-400 text-xs italic">***</span>
                               ) : (
                                 `${Number(it.unitPrice).toLocaleString('vi-VN')} đ`
                               )}
                             </td>
                             <td className="p-2.5 font-mono font-bold text-right text-indigo-900">
-                              {isKitchenPure ? (
+                              {hideFinancials ? (
                                 <span className="text-slate-400 text-xs italic">***</span>
                               ) : (
                                 `${(act * it.unitPrice).toLocaleString('vi-VN')} đ`

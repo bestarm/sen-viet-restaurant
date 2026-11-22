@@ -58,6 +58,7 @@ export type Batch = BatchResponse;
 
 export interface TakeOutLog {
   id: number;
+  branchId?: number;
   itemId?: number;
   item: Item;
   quantity: number;
@@ -149,7 +150,20 @@ export const kitchenApi = {
     return await db.recipes.toArray();
   },
 
-  // Nút 1: Lấy hàng từ kho (TASK-WH-06: Trừ kho thô & Biến động thẻ kho XUẤT_CHẾ_BIẾN)
+  // TASK-LOGIC-01: Lấy tồn kho khả dụng theo lô hàng của chi nhánh (tổng currentStock trong db.inventoryLots)
+  getItemAvailableStock: async (itemId: number, branchId?: number): Promise<number> => {
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(40, 80);
+    const lots = await db.inventoryLots.where('itemId').equals(itemId).toArray();
+    const branchLots = branchId
+      ? lots.filter((l) => !l.branchId || l.branchId === branchId)
+      : lots;
+    const targetLots = branchLots.length > 0 ? branchLots : lots;
+    const total = targetLots.reduce((sum, l) => sum + (Number(l.currentStock) || 0), 0);
+    return Number(total.toFixed(2));
+  },
+
+  // Nút 1: Lấy hàng từ kho (TASK-WH-06 & TASK-LOGIC-01: Chặn vượt tồn, trừ kho thô & Biến động thẻ kho XUẤT_CHẾ_BIẾN)
   recordTakeOut: async (data: { itemId: number; quantity: number; unit: string; note?: string; branchId?: number }) => {
     await initializeDatabaseIfEmpty();
     await simulateLatency(120, 150);
@@ -164,8 +178,23 @@ export const kitchenApi = {
         : 'Sen Việt Buffet - Chi nhánh Thái Nguyên';
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
 
+    // TASK-LOGIC-01: Đối chiếu tồn kho khả dụng trước khi trừ
+    const lots = await db.inventoryLots.where('itemId').equals(data.itemId).toArray();
+    const branchLots = lots.filter((l) => !branchId || !l.branchId || l.branchId === branchId);
+    const targetLots = branchLots.length > 0 ? branchLots : lots;
+    const totalAvailableStock = Number(
+      targetLots.reduce((sum, l) => sum + (Number(l.currentStock) || 0), 0).toFixed(2)
+    );
+
+    if (data.quantity > totalAvailableStock) {
+      throw new Error(
+        `Số lượng yêu cầu (${data.quantity} ${data.unit}) vượt quá tồn kho khả dụng (${totalAvailableStock} ${data.unit})`
+      );
+    }
+
     const newLog: TakeOutLog = {
       id: Date.now(),
+      branchId,
       item,
       quantity: data.quantity,
       unit: data.unit,
@@ -175,25 +204,17 @@ export const kitchenApi = {
 
     await db.takeOutLogs.add(newLog);
 
-    // 1. Trừ tồn kho thô trong các lô hàng khả dụng tại chi nhánh
+    // 1. Trừ chính xác currentStock trong các lot (lần lượt đến khi hết số lượng xuất)
     let remainingToDeduct = data.quantity;
-    const lots = await db.inventoryLots.where('itemId').equals(data.itemId).toArray();
-    const branchLots = lots.filter((l) => !branchId || !l.branchId || l.branchId === branchId);
-    const targetLots = branchLots.length > 0 ? branchLots : lots;
-
     for (const lot of targetLots) {
       if (remainingToDeduct <= 0) break;
-      if (lot.currentStock && lot.currentStock > 0) {
-        const deduct = Math.min(lot.currentStock, remainingToDeduct);
-        const newStock = Number((lot.currentStock - deduct).toFixed(2));
+      const stock = Number(lot.currentStock) || 0;
+      if (stock > 0) {
+        const deduct = Math.min(stock, remainingToDeduct);
+        const newStock = Number((stock - deduct).toFixed(2));
         await db.inventoryLots.update(lot.id, { currentStock: newStock });
-        remainingToDeduct -= deduct;
+        remainingToDeduct = Number((remainingToDeduct - deduct).toFixed(2));
       }
-    }
-    if (remainingToDeduct > 0 && targetLots.length > 0) {
-      const firstLot = targetLots[0];
-      const newStock = Math.max(0, Number(((firstLot.currentStock || 0) - remainingToDeduct).toFixed(2)));
-      await db.inventoryLots.update(firstLot.id, { currentStock: newStock });
     }
 
     // 2. Tạo biến động thẻ kho XUẤT_CHẾ_BIẾN vào warehouseDocuments

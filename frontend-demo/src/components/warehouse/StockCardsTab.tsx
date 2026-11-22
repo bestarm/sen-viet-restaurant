@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Boxes,
   Search,
@@ -31,6 +31,7 @@ import {
   WAREHOUSE_LOCATIONS,
   getItemWarehouseLocation,
   PhysicalWarehouseLocation,
+  warehouseApi,
 } from '../../api/warehouse';
 import { Item } from '../../api/kitchen';
 
@@ -197,8 +198,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
-  const [warehouseFilter, setWarehouseFilter] = useState<string>('ALL');
-  const [alertFilter, setAlertFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING' | 'SAFE' | 'OVERSTOCK'>('ALL');
+  const [alertFilter, setAlertFilter] = useState<'ALL' | 'CRITICAL' | 'WARNING' | 'SAFE'>('ALL');
   const [branchFilter, setBranchFilter] = useState<string>('ALL');
 
   // Stock Card Modal State
@@ -220,10 +220,10 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
   } | null>(null);
 
   const [cardDateFrom, setCardDateFrom] = useState<string>('2026-11-01');
-  const [cardDateTo, setCardDateTo] = useState<string>('2026-11-20');
+  const [cardDateTo, setCardDateTo] = useState<string>('2026-11-30');
   const [cardTypeFilter, setCardTypeFilter] = useState<string>('ALL');
 
-  // Chuẩn hóa định mức Min/Max Stock cho từng mặt hàng
+  // Chuẩn hóa định mức Min/Max Stock cho từng mặt hàng (tham chiếu nội bộ)
   const getMinMaxStock = (itemCode: string, category?: string) => {
     const code = (itemCode || '').toUpperCase();
     const cat = (category || '').toLowerCase();
@@ -243,7 +243,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
     return { minStock: 15, maxStock: 60, storage: 'Kho khô nhiệt độ phòng 25°C' };
   };
 
-  // TASK-WH-02: Tính toán tồn khả dụng đa chi nhánh & 5 nhóm thực phẩm buffet
+  // TASK-WH-02 & TASK-LOGIC-03: Tính toán tồn khả dụng đa chi nhánh & 5 nhóm thực phẩm buffet (Dữ liệu thực tế 100%)
   const consolidatedStocks = useMemo(() => {
     // Build map from items and batches keyed by `${branchId}-${itemId}`
     const map = new Map<string, {
@@ -313,7 +313,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
       });
     }
 
-    // 2. Aggregate batch stocks theo đúng chi nhánh
+    // 2. Aggregate batch stocks theo đúng chi nhánh từ batches / stocks thực tế
     for (const b of batches) {
       const bId = b.branchId || 1;
       const bCode: 'TN' | 'QV' = bId === 2 ? 'QV' : 'TN';
@@ -364,33 +364,11 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
       }
     }
 
-    // Baseline thực tế khi chưa có lô nhập động để giao diện thể hiện đầy đủ các trạng thái màu
-    return Array.from(map.values()).map((it) => {
-      if (it.currentStock === 0) {
-        if (it.branchId === 1) {
-          if (it.itemCode === 'HS-CAHOI') it.currentStock = 32.5;
-          else if (it.itemCode === 'HS-TOMCANG') it.currentStock = 50.0;
-          else if (it.itemCode === 'HS-MUCTRUN') it.currentStock = 18.0; // dưới min 25 -> 🔴 CRITICAL
-          else if (it.itemCode === 'TB-BACHIBO') it.currentStock = 78.5;
-          else if (it.itemCode.includes('CUA')) it.currentStock = 12.0; // dưới min 20 -> 🔴 CRITICAL
-          else if (it.itemCode.includes('GHE')) it.currentStock = 22.0;
-          else it.currentStock = 28.5;
-        } else {
-          // Quế Võ
-          if (it.itemCode === 'HS-CAHOI') it.currentStock = 24.0;
-          else if (it.itemCode === 'HS-TOMCANG') it.currentStock = 38.0;
-          else if (it.itemCode === 'HS-MUCTRUN') it.currentStock = 30.0;
-          else if (it.itemCode === 'TB-BACHIBO') it.currentStock = 45.0;
-          else if (it.itemCode.includes('CUA')) it.currentStock = 14.0; // dưới min 20 -> 🔴 CRITICAL
-          else if (it.itemCode.includes('GHE')) it.currentStock = 23.0; // sắp chạm ngưỡng
-          else it.currentStock = 22.0;
-        }
-      }
-      return it;
-    });
+    // Trả về số lượng tồn kho thực tế (KHÔNG gán đè mock baseline)
+    return Array.from(map.values());
   }, [buffetItems, batches]);
 
-  // Bộ lọc danh sách tồn (TN / QV / Toàn Chuỗi + 5 Nhóm Buffet + Kho Vật Lý + Cảnh Báo)
+  // Bộ lọc danh sách tồn (TN / QV / Toàn Chuỗi + 5 Nhóm Buffet + Cảnh Báo - TASK-LOGIC-04: Xóa warehouseFilter)
   const filteredStocks = useMemo(() => {
     return consolidatedStocks.filter((s) => {
       // Search
@@ -411,237 +389,121 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
         ((branchFilter === 'TN' || branchFilter === '1') && s.branchId === 1) ||
         ((branchFilter === 'QV' || branchFilter === '2') && s.branchId === 2);
 
-      // Alert Filter
+      // TASK-LOGIC-03: Alert Filter: HẾT HÀNG (<= 0), SẮP HẾT (<= 5), TỒN AN TOÀN (> 5)
       let matchAlert = true;
       if (alertFilter === 'CRITICAL') {
-        matchAlert = s.currentStock < s.minStock;
+        matchAlert = s.currentStock <= 0;
       } else if (alertFilter === 'WARNING') {
-        matchAlert = s.currentStock >= s.minStock && s.currentStock <= s.minStock * 1.3;
+        matchAlert = s.currentStock > 0 && s.currentStock <= 5;
       } else if (alertFilter === 'SAFE') {
-        matchAlert = s.currentStock > s.minStock * 1.3 && s.currentStock <= s.maxStock;
-      } else if (alertFilter === 'OVERSTOCK') {
-        matchAlert = s.currentStock > s.maxStock;
+        matchAlert = s.currentStock > 5;
       }
 
-      // KHO-11: Lọc Phân Vùng 5 Kho Vật Lý
-      const matchWarehouse =
-        warehouseFilter === 'ALL' || s.warehouseLocation === warehouseFilter;
-
-      return matchSearch && matchCat && matchBranch && matchAlert && matchWarehouse;
+      return matchSearch && matchCat && matchBranch && matchAlert;
     });
-  }, [consolidatedStocks, searchTerm, categoryFilter, branchFilter, alertFilter, warehouseFilter]);
+  }, [consolidatedStocks, searchTerm, categoryFilter, branchFilter, alertFilter]);
 
-  // Thống kê nhanh KPI Tồn kho theo bộ lọc hiện tại
+  // Thống kê nhanh KPI Tồn kho theo bộ lọc hiện tại (TASK-LOGIC-03: Tối giản 3 KPI thực chiến)
   const totalStockValue = useMemo(() => {
     return filteredStocks.reduce((sum, s) => sum + s.currentStock * s.unitPrice, 0);
+  }, [filteredStocks]);
+
+  const outOfStockCount = useMemo(() => {
+    return consolidatedStocks.filter((s) => s.currentStock <= 0).length;
   }, [consolidatedStocks]);
 
-  const criticalItemsCount = useMemo(() => {
-    return consolidatedStocks.filter((s) => s.currentStock < s.minStock).length;
+  const lowStockCount = useMemo(() => {
+    return consolidatedStocks.filter((s) => s.currentStock > 0 && s.currentStock <= 5).length;
   }, [consolidatedStocks]);
 
-  const warningItemsCount = useMemo(() => {
-    return consolidatedStocks.filter(
-      (s) => s.currentStock >= s.minStock && s.currentStock <= s.minStock * 1.3
-    ).length;
-  }, [consolidatedStocks]);
+  // TASK-LOGIC-02: Nối động 100% lịch sử giao dịch từ IndexedDB (warehouseDocuments, takeOutLogs, inventoryLots, inventoryChecks)
+  const [dbLedgerEntries, setDbLedgerEntries] = useState<StockCardTransaction[]>([]);
+  const [isLoadingLedger, setIsLoadingLedger] = useState<boolean>(false);
 
-  // Helper sinh dòng thời gian thẻ kho (Stock Ledger Timeline) cho mặt hàng được chọn
-  const stockLedgerTransactions = useMemo<StockCardTransaction[]>(() => {
-    if (!selectedStockItem) return [];
-
-    const itemId = selectedStockItem.itemId;
-    const itemCode = selectedStockItem.itemCode;
-    const finalStock = selectedStockItem.currentStock;
-    const unit = selectedStockItem.unit;
-
-    // Lọc các chứng từ thực tế có liên quan đến item này
-    const itemDocs = documents.filter((d) =>
-      (d.items || []).some((it) => it.itemId === itemId || it.itemCode === itemCode)
-    );
-
-    const txs: StockCardTransaction[] = [];
-
-    // Giao dịch 1: Nhập kho đầu tuần (PNK-202611-001)
-    txs.push({
-      id: 'tx-1',
-      timestamp: '2026-11-16 07:30:00',
-      date: '2026-11-16',
-      time: '07:30',
-      docCode: 'PNK-202611-001',
-      type: 'NHAP',
-      typeName: '📥 Nhập kho NCC',
-      inQty: 50.0,
-      outQty: 0,
-      balanceQty: 50.0,
-      unit,
-      performer: 'Lê Hoàng (Thủ kho)',
-      note: 'Nhập hàng tươi đầu tuần theo hợp đồng',
-      batchCode: 'LOT-202611-001',
-      refSupplier: 'Công ty Hải Sản Biển Đông (NCC-HS01)',
-    });
-
-    // Giao dịch 2: Xuất bếp chế biến phục vụ ca trưa (PXK-202611-012)
-    txs.push({
-      id: 'tx-2',
-      timestamp: '2026-11-16 10:45:00',
-      date: '2026-11-16',
-      time: '10:45',
-      docCode: 'PXK-202611-012',
-      type: 'XUAT_BEP',
-      typeName: '🍳 Xuất bếp nấu line',
-      inQty: 0,
-      outQty: 12.0,
-      balanceQty: 38.0,
-      unit,
-      performer: 'Nguyễn Văn Bếp (Bếp ca)',
-      note: 'Xuất chế biến line buffet hải sản trưa (180 khách)',
-      batchCode: 'LOT-202611-001',
-    });
-
-    // Giao dịch 3: Xuất bếp chế biến phục vụ ca tối (PXK-202611-018)
-    txs.push({
-      id: 'tx-3',
-      timestamp: '2026-11-16 17:15:00',
-      date: '2026-11-16',
-      time: '17:15',
-      docCode: 'PXK-202611-018',
-      type: 'XUAT_BEP',
-      typeName: '🍳 Xuất bếp nấu line',
-      inQty: 0,
-      outQty: 18.0,
-      balanceQty: 20.0,
-      unit,
-      performer: 'Nguyễn Bá Hoan (Bếp trưởng)',
-      note: 'Xuất chế biến tiệc tối cuối tuần (260 khách)',
-      batchCode: 'LOT-202611-001',
-    });
-
-    // Giao dịch 4: Nhập bổ sung giữa tuần (PNK-202611-042)
-    txs.push({
-      id: 'tx-4',
-      timestamp: '2026-11-17 08:00:00',
-      date: '2026-11-17',
-      time: '08:00',
-      docCode: 'PNK-202611-042',
-      type: 'NHAP',
-      typeName: '📥 Nhập kho NCC',
-      inQty: 35.0,
-      outQty: 0,
-      balanceQty: 55.0,
-      unit,
-      performer: 'Lê Hoàng (Thủ kho)',
-      note: 'Nhập bổ sung khẩn cấp theo yêu cầu Bếp trưởng',
-      batchCode: 'LOT-202611-009',
-      refSupplier: 'Cô Thủy Hải Sản (TNCOTHUY)',
-    });
-
-    // Giao dịch 5: Xuất hủy hàng ngộp/chết phát hiện khi sơ chế (PHK-202611-003)
-    txs.push({
-      id: 'tx-5',
-      timestamp: '2026-11-17 14:30:00',
-      date: '2026-11-17',
-      time: '14:30',
-      docCode: 'PHK-202611-003',
-      type: 'XUAT_HUY',
-      typeName: '🗑️ Xuất hủy kho',
-      inQty: 0,
-      outQty: 2.5,
-      balanceQty: 52.5,
-      unit,
-      performer: 'Lê Hoàng (Quản lý duyệt)',
-      note: 'Hải sản ngộp chết khi giao - Bắt đền NCC khấu trừ công nợ',
-      batchCode: 'LOT-202611-009',
-      refSupplier: 'Cô Thủy Hải Sản (TNCOTHUY)',
-    });
-
-    // Giao dịch 6: Xuất bếp ca trưa ngày 18 (PXK-202611-055)
-    txs.push({
-      id: 'tx-6',
-      timestamp: '2026-11-18 10:30:00',
-      date: '2026-11-18',
-      time: '10:30',
-      docCode: 'PXK-202611-055',
-      type: 'XUAT_BEP',
-      typeName: '🍳 Xuất bếp nấu line',
-      inQty: 0,
-      outQty: 20.0,
-      balanceQty: 32.5,
-      unit,
-      performer: 'Nguyễn Văn Bếp',
-      note: 'Xuất phục vụ quầy line ca trưa',
-      batchCode: 'LOT-202611-009',
-    });
-
-    // Giao dịch 7: Kiểm kê cuối ngày 18 đối soát (KK-202611-001)
-    txs.push({
-      id: 'tx-7',
-      timestamp: '2026-11-18 22:30:00',
-      date: '2026-11-18',
-      time: '22:30',
-      docCode: 'BBKK-202611-001',
-      type: 'KIEM_KE',
-      typeName: '🔍 Điều chỉnh kiểm kê',
-      inQty: 0,
-      outQty: 0,
-      balanceQty: finalStock,
-      unit,
-      performer: 'Nguyễn Bá Hoan & Vũ Thủy',
-      note: 'Khớp 100% số liệu kiểm kê thực tế bàn giao ca đêm',
-      batchCode: 'LOT-202611-009',
-    });
-
-    // Bổ sung các chứng từ phát sinh thực tế từ documents (XUAT_CHE_BIEN, NHAP_BTP, RA_LINE, v.v.)
-    for (const doc of itemDocs) {
-      for (const it of doc.items || []) {
-        if (it.itemId !== itemId && it.itemCode !== itemCode) continue;
-        const qty = it.actualWeight !== undefined ? it.actualWeight : it.quantity;
-        const isOut =
-          doc.docType === 'XUAT_CHE_BIEN' ||
-          doc.docType === 'RA_LINE' ||
-          doc.docType === 'XUAT_BEP' ||
-          doc.docType === 'HUY' ||
-          doc.docType === 'XUAT_HUY';
-
-        let typeName = '🔄 Biến động kho';
-        if (doc.docType === 'XUAT_CHE_BIEN') typeName = '🍳 Xuất chế biến bếp (XUẤT_CHẾ_BIẾN)';
-        else if (doc.docType === 'NHAP_BTP') typeName = '📥 Nhập BTP từ mẻ nấu';
-        else if (doc.docType === 'RA_LINE') typeName = '🍽️ Ra line buffet (+1)';
-        else if (doc.docType === 'NHAP') typeName = '📥 Nhập kho NCC';
-        else if (doc.docType === 'XUAT_HUY' || doc.docType === 'HUY') typeName = '🗑️ Xuất hủy kho';
-
-        txs.push({
-          id: `dyn-${doc.id}-${it.id || 0}`,
-          timestamp: doc.createdAt || '2026-11-20 12:00:00',
-          date: (doc.createdAt || '2026-11-20').slice(0, 10),
-          time: (doc.createdAt || '12:00').slice(11, 16) || '12:00',
-          docCode: doc.docCode,
-          type: doc.docType as any,
-          typeName,
-          inQty: isOut ? 0 : qty,
-          outQty: isOut ? qty : 0,
-          balanceQty: finalStock,
-          unit,
-          performer: doc.createdByName || doc.createdBy || 'Bếp viên',
-          note: doc.note || it.reason || 'Biến động tự động 3 điểm kho',
-          batchCode: it.batchCode,
-          refSupplier: doc.supplierName,
-        });
-      }
+  useEffect(() => {
+    if (!selectedStockItem) {
+      setDbLedgerEntries([]);
+      return;
     }
 
-    return txs.filter((tx) => {
+    let isMounted = true;
+    setIsLoadingLedger(true);
+
+    warehouseApi
+      .getStockLedger(selectedStockItem.itemId, selectedStockItem.branchId)
+      .then((entries) => {
+        if (!isMounted) return;
+        const txs: StockCardTransaction[] = entries.map((entry) => {
+          const dt = entry.date || '';
+          const datePart = dt.slice(0, 10);
+          const timePart = dt.slice(11, 16) || '10:00';
+          return {
+            id: String(entry.id),
+            timestamp: dt,
+            date: datePart,
+            time: timePart,
+            docCode: entry.docCode,
+            type: entry.docType,
+            typeName: entry.docTypeName,
+            inQty: entry.inQty,
+            outQty: entry.outQty,
+            balanceQty: entry.balance,
+            unit: entry.unit || selectedStockItem.unit,
+            performer: entry.performer || 'NV: bep_tn',
+            note: entry.note || entry.partnerOrReason || '',
+            batchCode: entry.batchCode,
+            refSupplier: entry.partnerOrReason?.includes('NCC') ? entry.partnerOrReason : undefined,
+          };
+        });
+        setDbLedgerEntries(txs);
+      })
+      .catch((err) => {
+        console.error('Lỗi khi nạp thẻ kho động từ IndexedDB:', err);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoadingLedger(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedStockItem, documents]);
+
+  // Dòng thời gian Thẻ kho (Stock Ledger Timeline) lọc theo ngày & loại biến động
+  const stockLedgerTransactions = useMemo<StockCardTransaction[]>(() => {
+    return dbLedgerEntries.filter((tx) => {
       const matchDate =
         (!cardDateFrom || tx.date >= cardDateFrom) && (!cardDateTo || tx.date <= cardDateTo);
       const matchType = cardTypeFilter === 'ALL' || tx.type === cardTypeFilter;
       return matchDate && matchType;
     });
-  }, [selectedStockItem, documents, cardDateFrom, cardDateTo, cardTypeFilter]);
+  }, [dbLedgerEntries, cardDateFrom, cardDateTo, cardTypeFilter]);
+
+  // Các chỉ số tổng hợp trong kỳ của popup thẻ kho (tính toán động 100%)
+  const totalInPeriod = useMemo(
+    () => stockLedgerTransactions.reduce((acc, t) => acc + t.inQty, 0),
+    [stockLedgerTransactions]
+  );
+  const totalOutPeriod = useMemo(
+    () => stockLedgerTransactions.reduce((acc, t) => acc + t.outQty, 0),
+    [stockLedgerTransactions]
+  );
+  const currentFinalBalance = useMemo(() => {
+    if (stockLedgerTransactions.length > 0) {
+      return stockLedgerTransactions[0].balanceQty;
+    }
+    return selectedStockItem?.currentStock || 0;
+  }, [stockLedgerTransactions, selectedStockItem]);
+
+  const openingBalance = useMemo(() => {
+    return Math.max(0, Number((currentFinalBalance - totalInPeriod + totalOutPeriod).toFixed(2)));
+  }, [currentFinalBalance, totalInPeriod, totalOutPeriod]);
 
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
-      {/* 4 KPI Overview Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* 3 KPI Overview Cards (TASK-LOGIC-03 & TASK-LOGIC-05: Tối giản 3 thẻ KPI thực chiến) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* Card 1: Tổng Mặt Hàng Quản Lý */}
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-[11px] font-extrabold uppercase tracking-wide">
@@ -657,10 +519,10 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
           </div>
         </div>
 
-        {/* Min Stock Alert Card */}
+        {/* Card 2: Mặt Hàng Hết Sạch Kho (Cần nhập ngay) */}
         <div
           className={`p-4 rounded-2xl border shadow-sm transition-all ${
-            criticalItemsCount > 0
+            outOfStockCount > 0
               ? 'bg-rose-50/80 border-rose-300 ring-2 ring-rose-400/30'
               : 'bg-white border-slate-200'
           }`}
@@ -668,31 +530,19 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
           <div className="flex items-center justify-between text-rose-700">
             <span className="text-[11px] font-extrabold uppercase tracking-wide flex items-center gap-1">
               <ShieldAlert className="h-4 w-4 text-rose-600 animate-pulse" />
-              <span>Dưới Mức Tối Thiểu (Min Stock)</span>
+              <span>Mặt Hàng Hết Sạch Kho</span>
             </span>
           </div>
           <div className="text-2xl font-black font-mono text-rose-700 mt-1 flex items-baseline gap-2">
-            <span>{criticalItemsCount}</span>
-            <span className="text-xs font-bold text-rose-600">món cần nhập gấp!</span>
+            <span>{outOfStockCount}</span>
+            <span className="text-xs font-bold text-rose-600">món cần nhập ngay!</span>
           </div>
           <div className="text-[10px] text-rose-600 mt-0.5 font-medium">
-            Có nguy cơ đứt hàng phục vụ line buffet
+            Tồn thực tế &le; 0 • Nguy cơ đứt hàng phục vụ
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex items-center justify-between text-amber-700">
-            <span className="text-[11px] font-extrabold uppercase tracking-wide">
-              Sắp Chạm Ngưỡng (≤ 1.3x Min)
-            </span>
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-black font-mono text-amber-700 mt-1">
-            {warningItemsCount}
-          </div>
-          <div className="text-[10px] text-slate-400 mt-0.5">Đưa vào danh sách dự trù ca tới</div>
-        </div>
-
+        {/* Card 3: Tổng Giá Trị Tồn Kho (Chỉ hiện cho Kế toán & Giám đốc) */}
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500">
             <span className="text-[11px] font-extrabold uppercase tracking-wide">
@@ -703,16 +553,16 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
           <div className="text-xl font-black font-mono text-indigo-950 mt-1">
             {hideFinancials ? '*** (Bảo mật tài chính)' : `${totalStockValue.toLocaleString('vi-VN')} đ`}
           </div>
-          <div className="text-[10px] text-emerald-700 font-semibold mt-0.5">
-            ✓ Đã đồng bộ với kết quả kiểm kê gần nhất
+          <div className="text-[10px] text-slate-400 font-medium mt-0.5">
+            {hideFinancials ? 'Chỉ Giám Đốc & Kế Toán được xem giá trị tiền' : '✓ Đã đồng bộ với kết quả kiểm kê gần nhất'}
           </div>
         </div>
       </div>
 
-      {/* Toolbar & Filters */}
+      {/* Toolbar & Filters (TASK-LOGIC-04: Xóa dropdown phân vùng kho vật lý trùng lặp) */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5 flex-1">
-          {/* Ô tìm kiếm */}
+          {/* Ô tìm kiếm Search-as-you-type */}
           <div className="relative min-w-[200px] flex-1 sm:flex-initial sm:w-64">
             <Search className="h-4 w-4 absolute left-3 top-2.5 text-slate-400" />
             <input
@@ -722,22 +572,6 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs focus:ring-2 focus:ring-indigo-500 font-medium"
             />
-          </div>
-
-          {/* KHO-11: Lọc Phân Vùng 5 Kho Vật Lý */}
-          <div className="flex items-center gap-1 text-xs">
-            <Boxes className="h-3.5 w-3.5 text-indigo-600" />
-            <select
-              value={warehouseFilter}
-              onChange={(e) => setWarehouseFilter(e.target.value)}
-              className="px-2.5 py-2 rounded-xl border border-indigo-300 text-xs font-bold text-indigo-900 bg-indigo-50/70"
-            >
-              {WAREHOUSE_LOCATIONS.map((loc) => (
-                <option key={loc.id} value={loc.id}>
-                  {loc.icon} {loc.name}
-                </option>
-              ))}
-            </select>
           </div>
 
           {/* TASK-WH-02: Bộ Lọc 5 Nhóm Thực Phẩm Buffet */}
@@ -756,7 +590,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             </select>
           </div>
 
-          {/* Lọc Tình Trạng Cảnh Báo */}
+          {/* TASK-LOGIC-03: Lọc Tình Trạng Cảnh Báo (Hết hàng <= 0, Sắp hết <= 5, Tồn an toàn) */}
           <div className="flex items-center gap-1 text-xs">
             <ShieldAlert className="h-3.5 w-3.5 text-slate-400" />
             <select
@@ -765,10 +599,9 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
               className="px-2.5 py-2 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 bg-white"
             >
               <option value="ALL">Tất cả tình trạng</option>
-              <option value="CRITICAL">🔴 Dưới Min Stock (Cần nhập gấp)</option>
-              <option value="WARNING">🟡 Sắp hết hàng (&le; 1.3x Min)</option>
-              <option value="SAFE">🟢 Tồn kho an toàn</option>
-              <option value="OVERSTOCK">🔵 Vượt định mức kho</option>
+              <option value="CRITICAL">🔴 Hết hàng (&le; 0)</option>
+              <option value="WARNING">🟡 Sắp hết hàng (&le; 5)</option>
+              <option value="SAFE">🟢 Tồn kho an toàn (&gt; 5)</option>
             </select>
           </div>
 
@@ -800,7 +633,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
         </div>
       </div>
 
-      {/* Bảng Danh Sách Tồn Kho & Thẻ Kho Tức Thời (TASK-PC-04: Freeze Columns & Sticky Header) */}
+      {/* Bảng Danh Sách Tồn Kho & Thẻ Kho Tức Thời (TASK-LOGIC-03: Bỏ Min/Max Stock, làm nổi bật Tồn thực tế) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto max-h-[calc(100vh-270px)] relative">
           <table className="w-full text-left border-collapse text-xs sm:text-sm">
@@ -813,10 +646,10 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                 <th className="p-3.5">Chi Nhánh</th>
                 <th className="p-3.5">Nhóm Thực Phẩm Buffet</th>
                 <th className="p-3.5 text-center">ĐVT</th>
-                <th className="p-3.5 text-right">Tồn Thực Tế</th>
-                <th className="p-3.5 text-right">Min Stock</th>
-                <th className="p-3.5 text-right">Max Stock</th>
-                <th className="p-3.5 text-right font-mono">Giá Trị Tồn (VNĐ)</th>
+                <th className="p-3.5 text-right font-black text-indigo-950">Tồn Thực Tế</th>
+                {!hideFinancials && (
+                  <th className="p-3.5 text-right font-mono">Giá Trị Tồn (VNĐ)</th>
+                )}
                 <th className="p-3.5 text-center">Trạng Thái Màu</th>
                 <th className="p-3.5 text-right sticky right-0 z-40 bg-slate-100 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                   Thẻ Kho
@@ -826,35 +659,33 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {filteredStocks.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-10 text-center text-slate-400">
+                  <td colSpan={hideFinancials ? 8 : 9} className="p-10 text-center text-slate-400">
                     <Boxes className="h-10 w-10 mx-auto text-slate-300 mb-2" />
                     <p className="font-semibold">Không tìm thấy mặt hàng nào phù hợp với bộ lọc</p>
                   </td>
                 </tr>
               ) : (
                 filteredStocks.map((item) => {
-                  const isCritical = item.currentStock < item.minStock;
-                  const isWarning =
-                    item.currentStock >= item.minStock && item.currentStock <= item.minStock * 1.3;
-                  const isOverstock = item.currentStock > item.maxStock;
+                  const isOutOfStock = item.currentStock <= 0;
+                  const isLowStock = item.currentStock > 0 && item.currentStock <= 5;
 
                   return (
                     <tr
                       key={`${item.branchId}-${item.itemId}`}
                       className={`hover:bg-slate-50 transition-colors group ${
-                        isCritical ? 'bg-rose-50/40' : ''
+                        isOutOfStock ? 'bg-rose-50/40' : ''
                       }`}
                     >
                       <td
                         className={`p-3.5 font-mono font-bold text-indigo-700 sticky left-0 z-20 w-28 ${
-                          isCritical ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
+                          isOutOfStock ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
                         }`}
                       >
                         {item.itemCode}
                       </td>
                       <td
                         className={`p-3.5 font-bold text-slate-900 sticky left-28 z-20 min-w-[200px] border-r border-slate-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${
-                          isCritical ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
+                          isOutOfStock ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
                         }`}
                       >
                         <div>{item.itemName}</div>
@@ -902,54 +733,46 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                         </div>
                       </td>
                       <td className="p-3.5 text-center font-medium">{item.unit}</td>
-                      <td className="p-3.5 text-right font-mono font-black text-slate-900 text-sm">
+                      <td className="p-3.5 text-right font-mono font-black text-base text-indigo-950">
                         <span
                           className={
-                            isCritical
+                            isOutOfStock
                               ? 'text-rose-600 animate-pulse'
-                              : isWarning
+                              : isLowStock
                               ? 'text-amber-600'
                               : 'text-indigo-950'
                           }
                         >
                           {item.currentStock.toFixed(2)}
                         </span>{' '}
-                        {item.unit}
+                        <span className="text-xs font-bold text-slate-500">{item.unit}</span>
                       </td>
-                      <td className="p-3.5 text-right font-mono font-bold text-slate-500">
-                        {item.minStock} {item.unit}
-                      </td>
-                      <td className="p-3.5 text-right font-mono text-slate-400">
-                        {item.maxStock} {item.unit}
-                      </td>
-                      <td className="p-3.5 text-right font-mono font-black text-indigo-950">
-                        {hideFinancials ? '***' : `${(item.currentStock * item.unitPrice).toLocaleString('vi-VN')} đ`}
-                      </td>
+                      {!hideFinancials && (
+                        <td className="p-3.5 text-right font-mono font-black text-indigo-950">
+                          {(item.currentStock * item.unitPrice).toLocaleString('vi-VN')} đ
+                        </td>
+                      )}
                       <td className="p-3.5 text-center">
-                        {isCritical ? (
+                        {isOutOfStock ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-300 animate-pulse">
                             <ShieldAlert className="h-3 w-3" />
-                            <span>🔴 DƯỚI MIN (CẦN NHẬP GẤP)</span>
+                            <span>🔴 HẾT HÀNG</span>
                           </span>
-                        ) : isWarning ? (
+                        ) : isLowStock ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
                             <AlertTriangle className="h-3 w-3" />
-                            <span>🟡 Sắp chạm ngưỡng</span>
-                          </span>
-                        ) : isOverstock ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                            <span>🔵 Vượt định mức</span>
+                            <span>🟡 SẮP HẾT</span>
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
                             <CheckCircle2 className="h-3 w-3" />
-                            <span>🟢 Tồn an toàn</span>
+                            <span>🟢 TỒN AN TOÀN</span>
                           </span>
                         )}
                       </td>
                       <td
                         className={`p-3.5 text-right sticky right-0 z-20 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)] ${
-                          isCritical ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
+                          isOutOfStock ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
                         }`}
                       >
                         <button
@@ -1015,14 +838,14 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
               </div>
             </div>
 
-            {/* Quick Summary Cards Inside Modal */}
+            {/* Quick Summary Cards Inside Modal (TASK-LOGIC-02: Tính toán động 100%) */}
             <div className="p-4 sm:p-5 bg-slate-50 border-b border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
               <div className="bg-white p-3 rounded-xl border border-slate-200">
                 <span className="text-slate-400 block text-[10px] uppercase font-bold">
                   Tồn Đầu Kỳ
                 </span>
                 <span className="font-mono font-black text-slate-800 text-sm sm:text-base mt-0.5 block">
-                  50.00 {selectedStockItem.unit}
+                  {openingBalance.toFixed(2)} {selectedStockItem.unit}
                 </span>
               </div>
               <div className="bg-white p-3 rounded-xl border border-slate-200">
@@ -1030,7 +853,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                   Tổng Nhập Trong Kỳ (+)
                 </span>
                 <span className="font-mono font-black text-emerald-700 text-sm sm:text-base mt-0.5 block">
-                  +35.00 {selectedStockItem.unit}
+                  +{totalInPeriod.toFixed(2)} {selectedStockItem.unit}
                 </span>
               </div>
               <div className="bg-white p-3 rounded-xl border border-slate-200">
@@ -1038,7 +861,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                   Tổng Xuất (Bếp + Hủy) (-)
                 </span>
                 <span className="font-mono font-black text-rose-700 text-sm sm:text-base mt-0.5 block">
-                  -52.50 {selectedStockItem.unit}
+                  -{totalOutPeriod.toFixed(2)} {selectedStockItem.unit}
                 </span>
               </div>
               <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-200">
@@ -1046,7 +869,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                   Tồn Kho Thực Tế Cuối Kỳ
                 </span>
                 <span className="font-mono font-black text-indigo-950 text-sm sm:text-base mt-0.5 block">
-                  {selectedStockItem.currentStock.toFixed(2)} {selectedStockItem.unit}
+                  {currentFinalBalance.toFixed(2)} {selectedStockItem.unit}
                 </span>
               </div>
             </div>
@@ -1112,7 +935,14 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {stockLedgerTransactions.length === 0 ? (
+                    {isLoadingLedger ? (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-slate-400">
+                          <RefreshCw className="h-5 w-5 mx-auto animate-spin mb-2 text-indigo-600" />
+                          <span>Đang đồng bộ thẻ kho từ IndexedDB...</span>
+                        </td>
+                      </tr>
+                    ) : stockLedgerTransactions.length === 0 ? (
                       <tr>
                         <td colSpan={8} className="p-8 text-center text-slate-400">
                           Chưa có giao dịch biến động nào trong khoảng thời gian đã chọn
@@ -1138,9 +968,9 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                               className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                                 tx.type === 'NHAP'
                                   ? 'bg-emerald-100 text-emerald-800'
-                                  : tx.type === 'XUAT_BEP'
+                                  : tx.type === 'XUAT_BEP' || tx.type === 'XUAT_CHE_BIEN'
                                   ? 'bg-blue-100 text-blue-800'
-                                  : tx.type === 'XUAT_HUY'
+                                  : tx.type === 'XUAT_HUY' || tx.type === 'HUY'
                                   ? 'bg-rose-100 text-rose-800'
                                   : 'bg-amber-100 text-amber-800'
                               }`}

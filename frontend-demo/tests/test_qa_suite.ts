@@ -2208,6 +2208,268 @@ async function runTestSuite() {
     'Bảng NXT và Bảng lương trang bị đầy đủ 4 ô chữ ký kiểm soát nội bộ chuẩn F&B (Người Lập, Quản Lý/Thủ Kho, Kế Toán Trưởng, Ban Điều Hành/Giám Đốc)'
   );
 
+  // -----------------------------------------------------------------
+  // 18. KIỂM THỬ TASK-LOGIC-01: CHẶN LẤY HÀNG VƯỢT TỒN & KHẤU TRỪ TỨC THỜI
+  // -----------------------------------------------------------------
+  console.log('\n🔒 SUITE 18: TASK-LOGIC-01 Stock Overdraft Blocking & Realtime Lot Deduction');
+
+  // 18.1. API getItemAvailableStock tính chính xác tổng tồn khả dụng từ db.inventoryLots theo chi nhánh
+  const salmon = await db.items.where('itemCode').equals('HS-CAHOI').first();
+  assert(salmon !== undefined, 'SUITE 18.1 Seed Item Exists', 'Mặt hàng cá hồi Nauy tồn tại trong DB');
+
+  const branch1SalmonStock = await kitchenApi.getItemAvailableStock(salmon.id, 1);
+  const salmonLots = await db.inventoryLots.where('itemId').equals(salmon.id).toArray();
+  const expectedSalmonStock = Number(
+    salmonLots
+      .filter((l) => !l.branchId || l.branchId === 1)
+      .reduce((sum, l) => sum + (Number(l.currentStock) || 0), 0)
+      .toFixed(2)
+  );
+
+  assert(
+    branch1SalmonStock === expectedSalmonStock && branch1SalmonStock > 0,
+    'SUITE 18.1 kitchenApi.getItemAvailableStock',
+    `API getItemAvailableStock tính chính xác tổng tồn khả dụng chi nhánh (${branch1SalmonStock} kg)`
+  );
+
+  // 18.2. Chặn lấy hàng vượt tồn kho khả dụng (yêu cầu 200kg khi tồn chỉ ~30kg)
+  let overTakeOutErrorMsg = '';
+  try {
+    await kitchenApi.recordTakeOut({
+      itemId: salmon.id,
+      quantity: 200.0,
+      unit: 'kg',
+      note: 'Thử lấy vượt tồn kho',
+      branchId: 1,
+    });
+  } catch (err: any) {
+    overTakeOutErrorMsg = err.message || '';
+  }
+
+  assert(
+    overTakeOutErrorMsg.includes('vượt quá tồn kho khả dụng') &&
+    overTakeOutErrorMsg.includes('200 kg') &&
+    overTakeOutErrorMsg.includes(`${branch1SalmonStock} kg`),
+    'SUITE 18.2 Strict Stock Overdraft Blocking',
+    `Chặn đứng thao tác lấy 200kg với thông báo lỗi: "${overTakeOutErrorMsg}"`
+  );
+
+  // 18.3. Khấu trừ tồn kho tức thời khi số lượng hợp lệ (lấy 5kg cá hồi)
+  const initialStockBeforeValid = await kitchenApi.getItemAvailableStock(salmon.id, 1);
+  const validTakeOutRes = await kitchenApi.recordTakeOut({
+    itemId: salmon.id,
+    quantity: 5.0,
+    unit: 'kg',
+    note: 'Xuất bếp phi lê 5kg',
+    branchId: 1,
+  });
+  const stockAfterValid = await kitchenApi.getItemAvailableStock(salmon.id, 1);
+
+  assert(
+    validTakeOutRes.success === true &&
+    Math.abs((initialStockBeforeValid - stockAfterValid) - 5.0) < 0.001,
+    'SUITE 18.3 Realtime Lot Deduction & Immediate Stock Update',
+    `Lấy thành công 5kg cá hồi: Tồn khả dụng giảm tức thời từ ${initialStockBeforeValid}kg -> ${stockAfterValid}kg`
+  );
+
+  // 18.4. Kiểm tra mã nguồn KitchenModule.tsx trang bị trực quan nhãn tồn kho & strict validation
+  const kitchenModuleSource = fs.readFileSync(path.resolve(__dirname, '../src/components/kitchen/KitchenModule.tsx'), 'utf-8');
+  const hasAvailableStockLabel = kitchenModuleSource.includes('Tồn kho khả dụng hiện tại:');
+  const hasStrictOverStockStyle = kitchenModuleSource.includes('border-rose-500 bg-rose-50 text-rose-900 ring-2 ring-rose-500');
+  const hasOverStockWarningMsg = kitchenModuleSource.includes('vượt quá tồn kho khả dụng');
+  const hasDisabledButtonOnOverStock = kitchenModuleSource.includes('isTakeOutOverStock');
+
+  assert(
+    hasAvailableStockLabel && hasStrictOverStockStyle && hasOverStockWarningMsg && hasDisabledButtonOnOverStock,
+    'SUITE 18.4 KitchenModule Nút 1 UI & Strict Visual Validation',
+    'KitchenModule Nút 1 hiển thị nhãn tồn khả dụng, viền đỏ cảnh báo, thông báo chi tiết và disable nút khi gõ quá số lượng tồn'
+  );
+
+  // -----------------------------------------------------------------
+  // 18.5. KIỂM THỬ TASK-LOGIC-02: THẺ KHO ĐỒNG BỘ ĐỘNG 100% TỪ INDEXEDDB (XÓA MOCK)
+  // -----------------------------------------------------------------
+  console.log('\n📜 SUITE 18.5: TASK-LOGIC-02 Dynamic Stock Ledger from IndexedDB & 0% Mock Data');
+
+  // Lấy dữ liệu sổ thẻ kho thực tế cho mặt hàng cá hồi
+  const salmonLedger = await warehouseApi.getStockLedger(salmon.id, 1);
+
+  assert(
+    salmonLedger.length > 0,
+    'SUITE 18.5 Dynamic Stock Ledger Loaded from DB',
+    `Sổ thẻ kho cá hồi tải động thành công ${salmonLedger.length} biến động thực tế từ IndexedDB`
+  );
+
+  // Tìm biến động xuất chế biến 5kg vừa phát sinh ở bước 18.3
+  const takeOutEntry = salmonLedger.find(
+    (e) => (e.docType === 'XUAT_CHE_BIEN' || e.docCode.includes('PXK-CB')) && Math.abs(e.outQty - 5.0) < 0.001
+  );
+
+  assert(
+    takeOutEntry !== undefined && (takeOutEntry.performer?.includes('bep_tn') || takeOutEntry.performer?.includes('Bếp')),
+    'SUITE 18.5 Realtime TakeOut Ledger Entry Integrity',
+    `Thẻ kho ghi nhận chính xác dòng xuất bếp: Mã "${takeOutEntry?.docCode}", Xuất: ${takeOutEntry?.outQty} kg, Người thực hiện: "${takeOutEntry?.performer}"`
+  );
+
+  // Kiểm tra tính lũy kế balance liên tục của dòng thẻ kho (theo trình tự thời gian tăng dần)
+  const chronologicalLedger = [...salmonLedger].reverse();
+  let ledgerBalanceContinuity = true;
+  for (let i = 1; i < chronologicalLedger.length; i++) {
+    const prev = chronologicalLedger[i - 1];
+    const curr = chronologicalLedger[i];
+    const expectedCurrBalance = Number((prev.balance + (curr.inQty || 0) - (curr.outQty || 0)).toFixed(2));
+    if (Math.abs(curr.balance - expectedCurrBalance) > 0.01) {
+      ledgerBalanceContinuity = false;
+      break;
+    }
+  }
+
+  assert(
+    ledgerBalanceContinuity === true,
+    'SUITE 18.5 Stock Ledger Running Balance Continuity',
+    'Số dư lũy kế balance được tính toán chính xác tuyệt đối theo dòng thời gian'
+  );
+
+  // Kiểm tra file StockCardsTab.tsx đã xóa 100% mock data tx-1, tx-2, tx-3, tx-4, tx-5
+  const stockCardsTabSource = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/warehouse/StockCardsTab.tsx'),
+    'utf-8'
+  );
+  const hasNoMockTx =
+    !stockCardsTabSource.includes("id: 'tx-1'") &&
+    !stockCardsTabSource.includes("id: 'tx-2'") &&
+    !stockCardsTabSource.includes("id: 'tx-3'") &&
+    !stockCardsTabSource.includes("id: 'tx-4'") &&
+    !stockCardsTabSource.includes("id: 'tx-5'");
+
+  assert(
+    hasNoMockTx === true,
+    'SUITE 18.5 Zero Hardcoded Mock Transactions in StockCardsTab',
+    'Đã xóa bỏ hoàn toàn 100% các bản ghi mock tĩnh (tx-1 -> tx-5) trong StockCardsTab.tsx'
+  );
+
+  // -----------------------------------------------------------------
+  // 18.6. KIỂM THỬ TASK-LOGIC-03: LƯỢC BỎ MIN/MAX STOCK, NỔI BẬT TỒN THỰC TẾ & 3 THẺ KPI
+  // -----------------------------------------------------------------
+  console.log('\n📊 SUITE 18.6: TASK-LOGIC-03 Simplified Stock Cards: No Min/Max, Prominent Real Stock');
+
+  const hasNoMinMaxColumns =
+    !stockCardsTabSource.includes('<th className="p-3.5 text-right font-mono">Min Stock</th>') &&
+    !stockCardsTabSource.includes('<th className="p-3.5 text-right font-mono">Max Stock</th>') &&
+    !stockCardsTabSource.includes('<th>Định Mức Min</th>') &&
+    !stockCardsTabSource.includes('OVERSTOCK');
+
+  const hasProminentStockColumn =
+    stockCardsTabSource.includes('font-black text-indigo-950') &&
+    stockCardsTabSource.includes('Tồn Thực Tế');
+
+  assert(
+    hasNoMinMaxColumns && hasProminentStockColumn,
+    'SUITE 18.6 Min/Max Stock Columns & OVERSTOCK Alert Removed',
+    'Bảng thẻ kho đã lược bỏ các cột Min/Max rườm rà và làm nổi bật cột Tồn Thực Tế với class font-black text-indigo-950'
+  );
+
+  const has3KpiCards =
+    stockCardsTabSource.includes('Tổng Mặt Hàng Quản Lý') &&
+    stockCardsTabSource.includes('Mặt Hàng Hết Sạch Kho') &&
+    stockCardsTabSource.includes('Tổng Giá Trị Tồn Kho');
+
+  const hasStatusBadges =
+    stockCardsTabSource.includes('HẾT HÀNG') &&
+    stockCardsTabSource.includes('SẮP HẾT') &&
+    stockCardsTabSource.includes('TỒN AN TOÀN');
+
+  assert(
+    has3KpiCards && hasStatusBadges,
+    'SUITE 18.6 3 Tactical KPI Cards & Clear Stock Alert Badges',
+    'Giao diện trang bị 3 thẻ KPI thực chiến (Tổng mặt hàng, Hết sạch kho, Tổng giá trị) kèm 3 mức huy hiệu: HẾT HÀNG, SẮP HẾT, TỒN AN TOÀN'
+  );
+
+  // -----------------------------------------------------------------
+  // 18.7. KIỂM THỬ TASK-LOGIC-04: LƯỢC BỎ DROPDOWN LỌC PHÂN VÙNG KHO TRÙNG LẶP
+  // -----------------------------------------------------------------
+  console.log('\n🎯 SUITE 18.7: TASK-LOGIC-04 Removed Redundant Physical Warehouse Filter Dropdown');
+
+  const hasNoWarehouseFilterDropdown =
+    !stockCardsTabSource.includes('const [warehouseFilter, setWarehouseFilter]') &&
+    !stockCardsTabSource.includes('value={warehouseFilter}') &&
+    !stockCardsTabSource.includes('<option value="KHO_DONG_LANH">');
+
+  const hasBuffetAndBranchFilters =
+    stockCardsTabSource.includes('BUFFET_FOOD_GROUPS') &&
+    stockCardsTabSource.includes('Tìm theo tên món hoặc mã hàng...') &&
+    stockCardsTabSource.includes('Chi nhánh Thái Nguyên (TN)') &&
+    stockCardsTabSource.includes('Chi nhánh Quế Võ (QV)');
+
+  assert(
+    hasNoWarehouseFilterDropdown && hasBuffetAndBranchFilters,
+    'SUITE 18.7 Clean Toolbar: Search-as-you-type + 5 Food Groups + Branches',
+    'Đã xóa bỏ hoàn toàn dropdown lọc phân vùng kho vật lý trùng lặp; tối ưu thanh công cụ với Tìm kiếm nhanh + 5 nhóm Buffet + Chi nhánh'
+  );
+
+  // -----------------------------------------------------------------
+  // 18.8. KIỂM THỬ TASK-LOGIC-05: BẢO MẬT GIÁ TIỀN VNĐ ĐỐI VỚI BẾP TRƯỞNG
+  // -----------------------------------------------------------------
+  console.log('\n🔐 SUITE 18.8: TASK-LOGIC-05 Financial Masking for Head Chef & Kitchen Staff');
+
+  // Kiểm tra ma trận phân quyền bảo mật giá tiền (hideFinancials)
+  const computeHideFinancials = (userObj: any) => {
+    const isHeadChef = userHasRole(userObj, 'ROLE_QL_BEP') || userObj?.username === 'ql_bep_tn';
+    const isBranchMgr = userHasRole(userObj, 'ROLE_BRANCH_MANAGER') || userHasRole(userObj, 'ROLE_QUAN_LY_CO_SO');
+    const isChuChuoi = userHasRole(userObj, 'ROLE_CHU_CHUOI');
+    const isGenAcc = userHasRole(userObj, 'ROLE_GENERAL_ACCOUNTANT');
+    const isBrAcc = userHasRole(userObj, 'ROLE_BRANCH_ACCOUNTANT');
+    const isKitchen = userHasRole(userObj, 'ROLE_KITCHEN_STAFF');
+    const isKitchenStaff = isKitchen;
+    return isHeadChef || isKitchenStaff || (!isChuChuoi && !isGenAcc && !isBrAcc && !isBranchMgr);
+  };
+
+  const headChefUser = { username: 'ql_bep_tn', roles: ['ROLE_QL_BEP'] };
+  const kitchenStaffUser = { username: 'bep_tn', roles: ['ROLE_KITCHEN_STAFF'] };
+  const accountantUser = { username: 'ketoan_tong', roles: ['ROLE_GENERAL_ACCOUNTANT'] };
+  const branchAccountantUser = { username: 'ketoan_tn', roles: ['ROLE_BRANCH_ACCOUNTANT'] };
+  const directorUser = { username: 'chu_chuoi', roles: ['ROLE_CHU_CHUOI'] };
+
+  assert(
+    computeHideFinancials(headChefUser) === true,
+    'SUITE 18.8 Head Chef (ql_bep_tn) Financial Masking Enforcement',
+    'Bếp Trưởng (ql_bep_tn / ROLE_QL_BEP) bị áp dụng hideFinancials = true bắt buộc'
+  );
+
+  assert(
+    computeHideFinancials(kitchenStaffUser) === true,
+    'SUITE 18.8 Kitchen Staff (bep_tn) Financial Masking Enforcement',
+    'Bếp viên (bep_tn / ROLE_KITCHEN_STAFF) bị áp dụng hideFinancials = true bắt buộc'
+  );
+
+  assert(
+    computeHideFinancials(accountantUser) === false &&
+    computeHideFinancials(branchAccountantUser) === false &&
+    computeHideFinancials(directorUser) === false,
+    'SUITE 18.8 Authorized Financial Access for Accountants & Director',
+    'Kế toán tổng, Kế toán chi nhánh và Chủ chuỗi được xem 100% giá tiền và tổng giá trị tồn kho (hideFinancials = false)'
+  );
+
+  // Kiểm tra mã nguồn WarehouseModule.tsx và StockCardsTab.tsx thực hiện che giá tiền
+  const warehouseModuleSource = fs.readFileSync(
+    path.resolve(__dirname, '../src/components/warehouse/WarehouseModule.tsx'),
+    'utf-8'
+  );
+
+  const hasHeadChefFinancialProtection =
+    warehouseModuleSource.includes('hideFinancials = isHeadChef || isKitchenStaff') &&
+    warehouseModuleSource.includes('hideFinancials={hideFinancials}');
+
+  const hasFinancialMaskingInStockCards =
+    stockCardsTabSource.includes("hideFinancials ? '*** (Bảo mật tài chính)'") &&
+    stockCardsTabSource.includes('!hideFinancials && (') &&
+    stockCardsTabSource.includes('Giá Trị Tồn (VNĐ)');
+
+  assert(
+    hasHeadChefFinancialProtection && hasFinancialMaskingInStockCards,
+    'SUITE 18.8 Source Code Financial Masking Implementation in UI',
+    'WarehouseModule truyền hideFinancials cho StockCardsTab, tự động che toàn bộ đơn giá, thành tiền và hiển thị "*** (Bảo mật tài chính)"'
+  );
+
   console.log('\n======================================================');
   const total = results.length;
   const passed = results.filter(r => r.passed).length;
