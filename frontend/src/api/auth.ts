@@ -1,48 +1,83 @@
-import apiClient from './client';
-import { ApiResponse, JwtAuthResponse, LoginRequest, User } from '../types/auth';
+import { db } from '../db/schema';
+import { simulateLatency, initializeDatabaseIfEmpty } from '../db/dbService';
+import { JwtAuthResponse, LoginRequest, User } from '../types/auth';
 
 /**
- * Gửi yêu cầu đăng nhập và nhận JWT Token.
+ * Đăng nhập Client-side đọc từ Dexie IndexedDB
  */
 export async function loginApi(data: LoginRequest): Promise<JwtAuthResponse> {
-  const response = await apiClient.post<ApiResponse<JwtAuthResponse>>('/v1/auth/login', data);
-  if (!response.data.success) {
-    throw new Error(response.data.message || 'Đăng nhập không thành công');
+  await initializeDatabaseIfEmpty();
+  await simulateLatency(100, 150);
+
+  const usernameLower = data.username.trim().toLowerCase();
+  const allUsers = await db.users.toArray();
+  const user = allUsers.find(
+    (u) => u.username.toLowerCase() === usernameLower
+  );
+
+  if (!user) {
+    throw new Error('Tài khoản hoặc mật khẩu không chính xác');
   }
-  return response.data.data;
+
+  const token = `demo-jwt-token-${user.id}-${Date.now()}`;
+  localStorage.setItem('senviet_demo_user_id', String(user.id));
+
+  return {
+    accessToken: token,
+    tokenType: 'Bearer',
+    expiresIn: 86400,
+    userId: user.id,
+    username: user.username,
+    fullName: user.fullName,
+    branchId: user.branchId,
+    branchName: user.branchName,
+    roles: user.roles,
+  };
 }
 
 /**
- * Lấy thông tin người dùng đang đăng nhập hiện tại (/api/v1/auth/me).
+ * Lấy thông tin người dùng hiện tại từ IndexedDB
  */
 export async function getMeApi(): Promise<User> {
-  const response = await apiClient.get<ApiResponse<User>>('/v1/auth/me');
-  if (!response.data.success) {
-    throw new Error(response.data.message || 'Không thể lấy thông tin người dùng');
+  await initializeDatabaseIfEmpty();
+  await simulateLatency(80, 120);
+
+  const savedUserId = localStorage.getItem('senviet_demo_user_id');
+  if (savedUserId) {
+    const user = await db.users.get(Number(savedUserId));
+    if (user) return user;
   }
-  return response.data.data;
+
+  // Fallback tài khoản mặc định là Quản lý Bếp / Bếp nếu chưa chọn
+  const defaultUser = await db.users.where('username').equals('bep_tn').first();
+  if (defaultUser) {
+    localStorage.setItem('senviet_demo_user_id', String(defaultUser.id));
+    return defaultUser;
+  }
+
+  const firstUser = (await db.users.toArray())[0];
+  if (!firstUser) {
+    throw new Error('Chưa có dữ liệu người dùng trong hệ thống');
+  }
+  return firstUser;
 }
 
 /**
- * Lấy danh sách người dùng trong hệ thống (dành cho Kế toán tổng / Quản trị viên).
+ * Lấy danh sách toàn bộ người dùng trong hệ thống
  */
 export async function getUsersApi(): Promise<User[]> {
-  try {
-    const response = await apiClient.get<ApiResponse<User[]>>('/v1/admin/users');
-    return response.data.data;
-  } catch (err: any) {
-    if (err.response?.status === 404) {
-      const response = await apiClient.get<ApiResponse<User[]>>('/v1/users');
-      return response.data.data;
-    }
-    throw err;
-  }
+  await initializeDatabaseIfEmpty();
+  await simulateLatency(100, 150);
+  return await db.users.toArray();
 }
 
 /**
- * Gán danh sách vai trò cho người dùng (/api/v1/admin/users/{userId}/roles).
+ * Gán danh sách vai trò cho người dùng
  */
 export async function assignUserRolesApi(userId: number, roles: string[]): Promise<User> {
-  const response = await apiClient.post<ApiResponse<User>>(`/v1/admin/users/${userId}/roles`, { roles });
-  return response.data.data;
+  await simulateLatency(100, 150);
+  await db.users.update(userId, { roles });
+  const updated = await db.users.get(userId);
+  if (!updated) throw new Error('Không tìm thấy người dùng');
+  return updated;
 }

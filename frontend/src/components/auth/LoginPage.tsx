@@ -10,11 +10,11 @@ export const LoginPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const demoAccounts = [
-    { role: 'Bếp / Bar', user: 'bep_thainguyen', branch: 'Thái Nguyên' },
-    { role: 'Quản lý Chi nhánh', user: 'quanly_thainguyen', branch: 'Thái Nguyên' },
-    { role: 'Kế toán Chi nhánh', user: 'ketoan_thainguyen', branch: 'Thái Nguyên' },
+    { role: 'Bếp / Bar', user: 'bep_tn', branch: 'Thái Nguyên' },
+    { role: 'Bếp Trưởng', user: 'ql_bep_tn', branch: 'Thái Nguyên' },
+    { role: 'Quản lý Chi nhánh', user: 'ql_chinhanh_tn', branch: 'Thái Nguyên' },
     { role: 'Kế toán Tổng / Admin', user: 'ketoan_tong', branch: 'Toàn chuỗi' },
-    { role: 'Nhân viên', user: 'nhanvien_quevo', branch: 'Quế Võ' },
+    { role: 'Chủ Chuỗi / Ban Giám Đốc', user: 'admin_chu', branch: 'Toàn chuỗi' },
   ];
 
   const handleSubmit = async (e: React.FormEvent) => {

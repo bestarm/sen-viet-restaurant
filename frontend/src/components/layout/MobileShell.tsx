@@ -42,9 +42,17 @@ export const MobileShell: React.FC<MobileShellProps> = ({
       ];
     }
 
-    const isGenAcc = userHasRole(user, 'ROLE_GENERAL_ACCOUNTANT');
+    const isGenAcc =
+      user.username === 'ketoan_tong' ||
+      userHasRole(user, 'ROLE_GENERAL_ACCOUNTANT') ||
+      userHasRole(user, 'ROLE_KETOAN_TONG') ||
+      userHasRole(user, 'ROLE_ACCOUNTANT');
     const isMgr = userHasRole(user, 'ROLE_RESTAURANT_MANAGER');
-    const isBrAcc = userHasRole(user, 'ROLE_BRANCH_ACCOUNTANT');
+    const isBrAcc =
+      userHasRole(user, 'ROLE_BRANCH_ACCOUNTANT') ||
+      userHasRole(user, 'ROLE_KETOAN_CHINHANH') ||
+      user.username === 'ketoan_tn' ||
+      user.username === 'ketoan_qv';
     const isKitchen = userHasRole(user, 'ROLE_KITCHEN_STAFF');
 
     // 1. Kế toán tổng chuỗi

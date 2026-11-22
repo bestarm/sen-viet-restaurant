@@ -12,12 +12,18 @@
 *.xlsx
 *.xls
 *.csv
+*.mp4
+*.mov
+*.avi
+*.mkv
 
 # Tài liệu khảo sát, câu hỏi, phản biện & nội dung dự án nội bộ
 doc_content.txt
 QUESTIONS_FOR_CLIENT.md
 phan_bien_va_gop_y_plan.md
 implement_demo_plan.md
+meeting_subtitles.txt
+YEU_CAU_KHACH_HANG*
 BaoGia*
 HopDong*
 BienBan*

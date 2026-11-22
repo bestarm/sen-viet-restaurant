@@ -4,6 +4,12 @@ export type RoleName =
   | 'ROLE_BRANCH_ACCOUNTANT'
   | 'ROLE_GENERAL_ACCOUNTANT'
   | 'ROLE_EMPLOYEE'
+  | 'ROLE_KETOAN_CHINHANH'
+  | 'ROLE_KETOAN_TONG'
+  | 'ROLE_CHU_CHUOI'
+  | 'ROLE_BEP'
+  | 'ROLE_QL_BEP'
+  | 'ROLE_QL_CHINHANH'
   | string;
 
 export type AppContextType = 'KITCHEN' | 'EMPLOYEE_PORTAL' | 'MANAGEMENT';
@@ -52,3 +58,5 @@ export interface ApiResponse<T> {
   data: T;
   timestamp: string;
 }
+
+export * from './warehouse';

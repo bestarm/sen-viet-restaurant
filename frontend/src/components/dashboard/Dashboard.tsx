@@ -51,9 +51,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
   });
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-300">
+    <div className="space-y-4 xl:space-y-3.5 animate-in fade-in duration-300">
       {/* 1. Header Banner Vận Hành */}
-      <div className="bg-gradient-to-r from-brand-800 via-brand-700 to-brand-600 rounded-3xl p-6 sm:p-8 text-white shadow-xl shadow-brand-900/20 relative overflow-hidden">
+      <div className="bg-gradient-to-r from-brand-800 via-brand-700 to-brand-600 rounded-2xl p-5 sm:p-6 text-white shadow-xl shadow-brand-900/20 relative overflow-hidden">
         {/* Subtle decorative background blur */}
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
         <div className="absolute right-40 top-0 w-32 h-32 bg-amber-400/20 rounded-full blur-xl pointer-events-none" />
@@ -254,7 +254,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <span>Lối Tắt Phân Hệ Quản Trị Hợp Quyền</span>
         </h2>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3.5">
           {/* Card Bếp 4 Nút */}
           {canSeeKitchen && onNavigateToKitchen && (
             <div

@@ -58,8 +58,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const isKitchen = hasRole('ROLE_KITCHEN_STAFF');
-  const isManager = hasRole('ROLE_RESTAURANT_MANAGER');
-  const isAccountant = hasRole('ROLE_BRANCH_ACCOUNTANT') || hasRole('ROLE_GENERAL_ACCOUNTANT');
+  const isManager = hasRole('ROLE_RESTAURANT_MANAGER') || hasRole('ROLE_QL_CHINHANH');
+  const isAccountant =
+    user?.username === 'ketoan_tong' ||
+    user?.username === 'ketoan_tn' ||
+    hasRole('ROLE_KETOAN_CHINHANH') ||
+    hasRole('ROLE_BRANCH_ACCOUNTANT') ||
+    hasRole('ROLE_GENERAL_ACCOUNTANT') ||
+    hasRole('ROLE_KETOAN_TONG') ||
+    hasRole('ROLE_ACCOUNTANT');
   const isEmployee = hasRole('ROLE_EMPLOYEE') || (!isKitchen && !isManager && !isAccountant);
 
   // Tính danh sách các Không gian làm việc (Contexts) dựa trên vai trò của người dùng
@@ -130,7 +137,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Thiết lập ngữ cảnh mặc định theo vai trò ưu tiên
       const roles = profile.roles || [];
       const hasKitchen = roles.includes('ROLE_KITCHEN_STAFF');
-      const hasManager = roles.includes('ROLE_RESTAURANT_MANAGER') || roles.includes('ROLE_BRANCH_ACCOUNTANT') || roles.includes('ROLE_GENERAL_ACCOUNTANT');
+      const hasManager =
+        roles.includes('ROLE_RESTAURANT_MANAGER') ||
+        roles.includes('ROLE_BRANCH_ACCOUNTANT') ||
+        roles.includes('ROLE_GENERAL_ACCOUNTANT') ||
+        roles.includes('ROLE_KETOAN_TONG') ||
+        roles.includes('ROLE_ACCOUNTANT') ||
+        profile.username === 'ketoan_tong';
       const defaultCtx: AppContextType = hasKitchen ? 'KITCHEN' : hasManager ? 'MANAGEMENT' : 'EMPLOYEE_PORTAL';
       setActiveContext(defaultCtx);
     } finally {

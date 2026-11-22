@@ -1,4 +1,5 @@
-import apiClient from './client';
+import { db } from '../db/schema';
+import { simulateLatency, initializeDatabaseIfEmpty } from '../db/dbService';
 
 export interface Attendance {
   id: number;
@@ -16,8 +17,8 @@ export interface Attendance {
   lateMinutes: number;
   checkOutTime?: string;
   checkOutSelfieUrl?: string;
-  checkOutDistanceMeters: number;
-  earlyMinutes: number;
+  checkOutDistanceMeters?: number;
+  earlyMinutes?: number;
   workShiftHours: number;
   actualHours: number;
   status: string; // 'DANG_LAM', 'HOAN_THANH', 'VI_PHAM_KHOANG_CACH'
@@ -45,6 +46,7 @@ export interface ExamQuestion {
   optionC: string;
   optionD: string;
   points: number;
+  correctOption?: string;
 }
 
 export interface ExamSubmitRequest {
@@ -109,6 +111,7 @@ export interface ResignationRequest {
   isAbandoned: boolean;
   status: string; // 'CHO_DUYET', 'DA_DUYET', 'DANG_GIU_LUONG', 'HOAN_TAT', 'BO_VIEC', 'CANCELLED'
   missingUniformDetails?: string;
+  managerNote?: string;
   approvedByUser?: {
     id: number;
     fullName: string;
@@ -119,13 +122,14 @@ export interface ResignationRequest {
     fullName: string;
   };
   cancelledAt?: string;
-  managerNote?: string;
-  createdAt: string;
+  da_thu_hoi_dong_phuc?: boolean;
 }
 
 export interface UniformReturnRequest {
   returnedAllocationIds: number[];
-  managerNote: string;
+  note?: string;
+  managerNote?: string;
+  da_thu_hoi_dong_phuc?: boolean;
 }
 
 export interface AbandonmentScanResult {
@@ -142,118 +146,442 @@ export interface AbandonmentScanResult {
   }>;
 }
 
+// Hàm tính khoảng cách GPS Haversine (mét)
+function calculateHaversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
+
 export const hrApi = {
   // Attendance
   checkIn: async (data: CheckInRequest): Promise<Attendance> => {
-    const res = await apiClient.post('/hr/attendance/check-in', data);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 180);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const user = (await db.users.get(savedUserId)) || (await db.users.get(1));
+    const branch = (user?.branchId ? await db.branches.get(user.branchId) : null) || (await db.branches.get(1));
+
+    const branchLat = branch?.latitude || 21.5928;
+    const branchLon = branch?.longitude || 105.8442;
+
+    const distance = calculateHaversineMeters(data.latitude, data.longitude, branchLat, branchLon);
+    const isValidLocation = distance <= 50; // Chuẩn Geofence 50m
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    const newAttendance: Attendance = {
+      id: Date.now(),
+      userId: user?.id || 1,
+      fullName: user?.fullName || 'Nguyễn Văn Bếp',
+      username: user?.username || 'bep_tn',
+      branchId: branch?.id || 1,
+      branchName: branch?.name || 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+      attendanceDate: todayStr,
+      shiftName: data.shiftName || 'Ca Sáng (08:00 - 16:30)',
+      checkInTime: now.toISOString(),
+      checkInSelfieUrl: data.selfieUrl,
+      checkInDistanceMeters: distance,
+      isValidLocation,
+      lateMinutes: 0,
+      workShiftHours: 8.0,
+      actualHours: 8.0,
+      status: isValidLocation ? 'DANG_LAM' : 'VI_PHAM_KHOANG_CACH',
+    };
+
+    await db.attendances.add(newAttendance);
+    return newAttendance;
   },
 
   checkOut: async (data: CheckOutRequest): Promise<Attendance> => {
-    const res = await apiClient.post('/hr/attendance/check-out', data);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 180);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const list = await db.attendances.toArray();
+    const existing = list.find((a) => a.userId === savedUserId && a.status === 'DANG_LAM');
+
+    const now = new Date().toISOString();
+    if (existing) {
+      const updated = {
+        ...existing,
+        checkOutTime: now,
+        checkOutSelfieUrl: data.selfieUrl,
+        status: 'HOAN_THANH',
+      };
+      await db.attendances.put(updated);
+      return updated;
+    }
+
+    const fallback: Attendance = {
+      id: Date.now(),
+      userId: savedUserId,
+      fullName: 'Nhân viên Demo',
+      username: 'demo_user',
+      branchId: 1,
+      branchName: 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+      attendanceDate: now.slice(0, 10),
+      shiftName: 'Ca Sáng',
+      checkInTime: now,
+      checkOutTime: now,
+      checkInDistanceMeters: 5,
+      isValidLocation: true,
+      lateMinutes: 0,
+      workShiftHours: 8.0,
+      actualHours: 8.0,
+      status: 'HOAN_THANH',
+    };
+    return fallback;
   },
 
   getTodayAttendances: async (branchId?: number): Promise<Attendance[]> => {
-    const res = await apiClient.get('/hr/attendance/today', { params: { branchId } });
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    let list = await db.attendances.toArray();
+    if (branchId) {
+      list = list.filter((a) => a.branchId === branchId);
+    }
+    return list.reverse();
   },
 
   getMyAttendanceHistory: async (): Promise<Attendance[]> => {
-    const res = await apiClient.get('/hr/attendance/history');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const list = await db.attendances.toArray();
+    return list.filter((a) => a.userId === savedUserId).reverse();
   },
 
   scanAbandonment: async (): Promise<AbandonmentScanResult> => {
-    const res = await apiClient.get('/hr/attendance/scan-abandonment');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 160);
+
+    return {
+      scanDate: new Date().toISOString().slice(0, 10),
+      totalUsersScanned: 10,
+      suspectedAbandonmentCount: 1,
+      suspectedUsers: [
+        {
+          userId: 10,
+          fullName: 'Ngô Văn Nghỉ Việc',
+          username: 'nv_nghiviec_tn',
+          branchName: 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+          consecutiveDaysAbsent: 5,
+          suggestion: 'Đã nghỉ việc không phép 5 ngày liên tiếp — Đề xuất giữ lương theo quy chế đồng phục',
+        },
+      ],
+    };
   },
 
   confirmAbandonment: async (userId: number): Promise<ResignationRequest> => {
-    const res = await apiClient.post(`/hr/attendance/confirm-abandonment/${userId}`);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 160);
+
+    const user = await db.users.get(userId);
+    const res: ResignationRequest = {
+      id: Date.now(),
+      user: {
+        id: userId,
+        username: user?.username || 'unknown',
+        fullName: user?.fullName || 'Nhân viên bỏ việc',
+        phone: user?.phone,
+      },
+      branch: {
+        id: user?.branchId || 1,
+        branchCode: user?.branchCode || 'TN',
+        branchName: user?.branchName || 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+      },
+      requestDate: new Date().toISOString().slice(0, 10),
+      reason: 'Tự ý bỏ việc không thông báo',
+      isAbandoned: true,
+      status: 'BO_VIEC',
+      missingUniformDetails: 'Đang giữ lương do chưa bàn giao lại đồng phục (thiếu 1 Tạp dề, 1 Nón bếp)',
+      managerNote: 'Tự ý bỏ việc không thông báo',
+      da_thu_hoi_dong_phuc: false,
+    };
+
+    await db.resignationRequests.add(res);
+    return res;
   },
 
   cancelAbandonment: async (id: number): Promise<ResignationRequest> => {
-    try {
-      const res = await apiClient.post(`/v1/hr/abandoned/${id}/cancel`);
-      return res.data.data;
-    } catch (err: any) {
-      if (err.response?.status === 404) {
-        try {
-          const res = await apiClient.post(`/hr/abandoned/${id}/cancel`);
-          return res.data.data;
-        } catch (e: any) {
-          if (e.response?.status === 404) {
-            const res2 = await apiClient.post(`/hr/attendance/abandoned/${id}/cancel`);
-            return res2.data.data;
-          }
-          throw e;
-        }
-      }
-      throw err;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(100, 140);
+
+    const existing = await db.resignationRequests.get(id);
+    if (existing) {
+      const updated = { ...existing, status: 'CANCELLED' };
+      await db.resignationRequests.put(updated);
+      return updated;
     }
+    throw new Error('Không tìm thấy bản ghi');
   },
 
   // Exam
   getExamQuestions: async (position = 'BEP'): Promise<ExamQuestion[]> => {
-    const res = await apiClient.get('/hr/exams/questions', { params: { position } });
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const list = await db.examQuestions.toArray();
+    return list.filter((q) => q.position === position || !q.position);
   },
 
   submitExam: async (data: ExamSubmitRequest): Promise<ExamSubmission> => {
-    const res = await apiClient.post('/hr/exams/submit', data);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 180);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const user = (await db.users.get(savedUserId)) || (await db.users.get(1));
+    const questions = await db.examQuestions.toArray();
+
+    let correctCount = 0;
+    Object.entries(data.answers || {}).forEach(([qId, ans]) => {
+      const q = questions.find((item) => String(item.id) === String(qId));
+      if (q && q.correctOption === ans) {
+        correctCount++;
+      }
+    });
+
+    const theoryScore = questions.length > 0 ? Math.round((correctCount / questions.length) * 100) : 100;
+    const now = new Date().toISOString();
+
+    const submission: ExamSubmission = {
+      id: Date.now(),
+      userId: user?.id || 1,
+      fullName: user?.fullName || 'Nguyễn Văn Bếp',
+      examQuarter: data.examQuarter || 'Q4-2026',
+      startedAt: data.startedAt || now,
+      submittedAt: now,
+      durationSeconds: 900,
+      theoryScore,
+      practicalScore: 92,
+      totalScore: Math.round((theoryScore + 92) / 2),
+      isPassed: theoryScore >= 75,
+      status: 'DA_CHAM_DIEM',
+      practicalComment: 'Kỹ năng thái lát bò và chế biến hải sản đồng đều, đạt chuẩn định mức',
+    };
+
+    await db.examSubmissions.add(submission);
+    return submission;
   },
 
   getBranchSubmissions: async (branchId?: number): Promise<ExamSubmission[]> => {
-    const res = await apiClient.get('/hr/exams/submissions', { params: { branchId } });
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    let list = await db.examSubmissions.toArray();
+    if (branchId) {
+      list = list.filter((s) => !s.branchId || s.branchId === branchId);
+    }
+    return list.map((s) => ({
+      ...s,
+      isPassed: s.isPassed !== undefined ? s.isPassed : s.theoryScore >= 75,
+      examQuarter: s.examQuarter || 'Q4-2026',
+    })).reverse();
   },
 
   getMySubmissions: async (): Promise<ExamSubmission[]> => {
-    const res = await apiClient.get('/hr/exams/my-submissions');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const list = await db.examSubmissions.toArray();
+    return list
+      .filter((s) => s.userId === savedUserId)
+      .map((s) => ({
+        ...s,
+        isPassed: s.isPassed !== undefined ? s.isPassed : s.theoryScore >= 75,
+        examQuarter: s.examQuarter || 'Q4-2026',
+      }))
+      .reverse();
   },
 
   gradePractical: async (id: number, data: GradePracticalRequest): Promise<ExamSubmission> => {
-    const res = await apiClient.put(`/hr/exams/submissions/${id}/grade-practical`, data);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 160);
+
+    const existing = await db.examSubmissions.get(id);
+    if (!existing) throw new Error('Không tìm thấy bài thi');
+
+    const totalScore = Math.round((existing.theoryScore + data.practicalScore) / 2);
+    const updated: ExamSubmission = {
+      ...existing,
+      practicalScore: data.practicalScore,
+      totalScore,
+      isPassed: totalScore >= 75,
+      practicalComment: data.comment,
+      status: 'DA_CHAM_DIEM',
+    };
+
+    await db.examSubmissions.put(updated);
+    return updated;
   },
 
   // Uniform & Resignation
   getUniformItems: async (): Promise<UniformItem[]> => {
-    const res = await apiClient.get('/hr/uniforms/items');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+    const list = await db.uniformItems.toArray();
+    return list.map((u) => ({
+      id: u.id,
+      itemName: u.itemName,
+      depositValue: u.depositValue || u.depositPrice || 100000,
+    }));
   },
 
   getMyUniformAllocations: async (): Promise<UniformAllocation[]> => {
-    const res = await apiClient.get('/hr/uniforms/my-allocations');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const list = await db.uniformAllocations.toArray();
+    return list
+      .filter((u) => u.userId === savedUserId)
+      .map((u) => ({
+        id: u.id,
+        uniformItemId: u.uniformItemId,
+        uniformItemName: u.uniformItemName || u.uniformName || 'Đồng phục',
+        depositValue: u.depositValue || 120000,
+        allocatedDate: u.allocatedDate || '2026-06-01',
+        isReturned: u.isReturned || false,
+        returnedDate: u.returnedDate,
+        note: u.note,
+      }));
   },
 
   getUserUniformAllocations: async (userId: number): Promise<UniformAllocation[]> => {
-    const res = await apiClient.get(`/hr/uniforms/user-allocations/${userId}`);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const list = await db.uniformAllocations.toArray();
+    return list
+      .filter((u) => u.userId === userId)
+      .map((u) => ({
+        id: u.id,
+        uniformItemId: u.uniformItemId,
+        uniformItemName: u.uniformItemName || u.uniformName || 'Đồng phục',
+        depositValue: u.depositValue || 120000,
+        allocatedDate: u.allocatedDate || '2026-06-01',
+        isReturned: u.isReturned || false,
+        returnedDate: u.returnedDate,
+        note: u.note,
+      }));
   },
 
   getResignationRequests: async (branchId?: number): Promise<ResignationRequest[]> => {
-    const res = await apiClient.get('/hr/resignations', { params: { branchId } });
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    let list = await db.resignationRequests.toArray();
+    if (branchId) {
+      list = list.filter((r) => !r.branch?.id || r.branch.id === branchId || r.branchId === branchId);
+    }
+    return list.map((r) => ({
+      id: r.id,
+      user: r.user || {
+        id: r.userId || 10,
+        username: r.username || 'nv_nghiviec_tn',
+        fullName: r.fullName || 'Ngô Văn Nghỉ Việc',
+      },
+      branch: r.branch || {
+        id: r.branchId || 1,
+        branchCode: 'TN',
+        branchName: r.branchName || 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+      },
+      requestDate: r.requestDate || r.resignationDate || '2026-11-15',
+      reason: r.reason || 'Nghỉ việc',
+      isAbandoned: r.isAbandoned || false,
+      status: r.status || 'DANG_GIU_LUONG',
+      missingUniformDetails: r.missingUniformDetails || r.missingUniformNote || 'Thiếu 1 Tạp dề, 1 Nón bếp',
+      managerNote: r.managerNote,
+      da_thu_hoi_dong_phuc: r.da_thu_hoi_dong_phuc,
+    })).reverse();
   },
 
   getMyResignations: async (): Promise<ResignationRequest[]> => {
-    const res = await apiClient.get('/hr/resignations/my');
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const list = await hrApi.getResignationRequests();
+    return list.filter((r) => r.user.id === savedUserId);
   },
 
   submitResignation: async (reason?: string): Promise<ResignationRequest> => {
-    const res = await apiClient.post('/hr/resignations/submit', null, { params: { reason } });
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 180);
+
+    const savedUserId = Number(localStorage.getItem('senviet_demo_user_id') || 1);
+    const user = (await db.users.get(savedUserId)) || (await db.users.get(1));
+
+    const newReq: ResignationRequest = {
+      id: Date.now(),
+      user: {
+        id: user?.id || 1,
+        username: user?.username || 'bep_tn',
+        fullName: user?.fullName || 'Nguyễn Văn Bếp',
+        phone: user?.phone,
+      },
+      branch: {
+        id: user?.branchId || 1,
+        branchCode: user?.branchCode || 'TN',
+        branchName: user?.branchName || 'Sen Việt Buffet - Chi nhánh Thái Nguyên',
+      },
+      requestDate: new Date().toISOString().slice(0, 10),
+      reason: reason || 'Lý do cá nhân',
+      isAbandoned: false,
+      status: 'CHO_DUYET',
+      da_thu_hoi_dong_phuc: false,
+    };
+
+    await db.resignationRequests.add(newReq);
+    return newReq;
   },
 
   verifyChecklist: async (id: number, data: UniformReturnRequest): Promise<ResignationRequest> => {
-    const res = await apiClient.put(`/hr/resignations/${id}/checklist`, data);
-    return res.data.data;
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(120, 180);
+
+    const existing = await db.resignationRequests.get(id);
+    if (!existing) throw new Error('Không tìm thấy đơn nghỉ việc');
+
+    const isFullyReturned = data.da_thu_hoi_dong_phuc !== undefined ? data.da_thu_hoi_dong_phuc : true;
+
+    const updated: ResignationRequest = {
+      ...existing,
+      da_thu_hoi_dong_phuc: isFullyReturned,
+      status: isFullyReturned ? 'HOAN_TAT' : 'DANG_GIU_LUONG',
+      missingUniformDetails: isFullyReturned ? 'Đã thu hồi đủ đồng phục' : data.note || 'Còn thiếu đồng phục',
+      managerNote: data.note,
+    };
+
+    await db.resignationRequests.put(updated);
+
+    // Mở khóa lương tương ứng nếu đã thu hồi đủ đồng phục
+    if (isFullyReturned) {
+      const payrolls = await db.payrollRecords.toArray();
+      const userId = existing.user?.id || existing.userId;
+      const userPayroll = payrolls.find((p) => p.userId === userId);
+      if (userPayroll) {
+        await db.payrollRecords.update(userPayroll.id, {
+          isPaid: true,
+          status: 'DA_THANH_TOAN',
+          holdReason: '✅ Đã hoàn tất thu hồi đồng phục — Cho phép thanh toán lương',
+        });
+      }
+    }
+
+    return updated;
   },
 };

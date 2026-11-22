@@ -20,7 +20,14 @@ export const Navbar: React.FC = () => {
     if (roles.includes('ROLE_KITCHEN_STAFF')) names.push('Bếp / Bar');
     if (roles.includes('ROLE_RESTAURANT_MANAGER')) names.push('Quản lý');
     if (roles.includes('ROLE_BRANCH_ACCOUNTANT')) names.push('Kế toán CN');
-    if (roles.includes('ROLE_GENERAL_ACCOUNTANT')) names.push('Kế toán Tổng');
+    if (
+      roles.includes('ROLE_GENERAL_ACCOUNTANT') ||
+      roles.includes('ROLE_KETOAN_TONG') ||
+      roles.includes('ROLE_ACCOUNTANT') ||
+      user.username === 'ketoan_tong'
+    ) {
+      names.push('Kế toán Tổng');
+    }
     if (roles.includes('ROLE_EMPLOYEE')) names.push('Nhân viên');
     return names.length > 0 ? names.join(' + ') : 'Người dùng';
   };

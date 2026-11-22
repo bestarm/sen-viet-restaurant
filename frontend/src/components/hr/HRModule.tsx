@@ -105,13 +105,29 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
   const [permissionModalType, setPermissionModalType] = useState<'CAMERA' | 'GEOLOCATION'>('GEOLOCATION');
   const selfieFileInputRef = useRef<HTMLInputElement>(null);
 
-  const isManagerOrAccountant = currentUser?.roles.some((r: RoleName) =>
-    ['ROLE_RESTAURANT_MANAGER', 'ROLE_BRANCH_ACCOUNTANT', 'ROLE_GENERAL_ACCOUNTANT'].includes(r)
-  );
+  const isManagerOrAccountant =
+    currentUser?.username === 'ketoan_tong' ||
+    currentUser?.roles.some((r: RoleName) =>
+      [
+        'ROLE_RESTAURANT_MANAGER',
+        'ROLE_BRANCH_ACCOUNTANT',
+        'ROLE_GENERAL_ACCOUNTANT',
+        'ROLE_KETOAN_TONG',
+        'ROLE_ACCOUNTANT',
+      ].includes(r)
+    );
 
-  const isGeneralAccountant = currentUser?.roles.some((r: RoleName) =>
-    ['ROLE_GENERAL_ACCOUNTANT', 'ROLE_ADMIN', 'ROLE_CHU_CHUOI'].includes(r)
-  );
+  const isGeneralAccountant =
+    currentUser?.username === 'ketoan_tong' ||
+    currentUser?.roles.some((r: RoleName) =>
+      [
+        'ROLE_GENERAL_ACCOUNTANT',
+        'ROLE_KETOAN_TONG',
+        'ROLE_ACCOUNTANT',
+        'ROLE_ADMIN',
+        'ROLE_CHU_CHUOI',
+      ].includes(r)
+    );
 
   // Haversine distance calculator for client preview
   const calcDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
@@ -318,14 +334,14 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
   const setPresetInLocation = () => {
     setCurrentLat(branchCoords.lat);
     setCurrentLon(branchCoords.lon);
-    setMessage({ text: 'Đã định vị tại nhà hàng (Khoảng cách: 0m - HỢP LỆ)', type: 'success' });
+    setMessage({ text: 'Đã định vị tại nhà hàng (Khoảng cách: 0m ≤ 50m - HỢP LỆ)', type: 'success' });
   };
 
   const setPresetOutLocation = () => {
-    // 500m away
-    setCurrentLat(branchCoords.lat + 0.0045);
+    // 450m away
+    setCurrentLat(branchCoords.lat + 0.0041);
     setCurrentLon(branchCoords.lon);
-    setMessage({ text: 'Đã chuyển tọa độ cách nhà hàng ~500m (CẢNH BÁO VI PHẠM GEOFENCE)', type: 'warning' });
+    setMessage({ text: 'Đã chuyển tọa độ cách nhà hàng ~450m > 50m (CẢNH BÁO VI PHẠM GEOFENCE)', type: 'warning' });
   };
 
   const getRealGPSLocation = () => {
@@ -368,7 +384,7 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
         longitude: currentLon
       });
       setMessage({
-        text: `Check-in thành công! Khoảng cách: ${res.checkInDistanceMeters}m. ${res.isValidLocation ? '✅ Vị trí hợp lệ' : '⚠️ Cảnh báo: Ngoài phạm vi 100m!'}`,
+        text: `Check-in thành công! Khoảng cách: ${res.checkInDistanceMeters}m. ${res.isValidLocation ? '✅ Vị trí hợp lệ (≤50m)' : '⚠️ Cảnh báo: Ngoài phạm vi chi nhánh (>50m)!' }`,
         type: res.isValidLocation ? 'success' : 'warning'
       });
       await loadAttendanceData();
@@ -699,30 +715,58 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
               Camera Chấm Công & Định Vị
             </h2>
 
-            {/* Geofencing Indicator Badge */}
-            <div
-              className={`p-3.5 rounded-xl border flex items-center justify-between ${
-                distanceMeters <= 100
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                  : 'bg-rose-50 border-rose-200 text-rose-800'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <MapPin className={`w-5 h-5 ${distanceMeters <= 100 ? 'text-emerald-600' : 'text-rose-600'}`} />
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider">
-                    {distanceMeters <= 100 ? 'VỊ TRÍ HỢP LỆ' : 'VI PHẠM GEOFENCE (> 100M)'}
+            {/* VÒNG RADAR GPS KHOẢNG CÁCH TRỰC QUAN THỜI GIAN THỰC (Task 13.6) */}
+            <div className={`p-4 rounded-2xl border transition-all ${
+              distanceMeters <= 50
+                ? 'bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-transparent border-emerald-300'
+                : 'bg-gradient-to-br from-rose-500/10 via-rose-500/5 to-transparent border-rose-300'
+            }`}>
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                {/* Vòng Radar trực quan */}
+                <div className="relative w-28 h-28 flex items-center justify-center flex-shrink-0">
+                  {/* Vòng quét bên ngoài */}
+                  <div className={`absolute inset-0 rounded-full border-2 border-dashed ${
+                    distanceMeters <= 50 ? 'border-emerald-400' : 'border-rose-400 animate-pulse'
+                  }`} />
+                  {/* Vòng ranh giới 50m */}
+                  <div className={`absolute inset-3 rounded-full border ${
+                    distanceMeters <= 50 ? 'border-emerald-500 bg-emerald-500/10' : 'border-rose-500 bg-rose-500/10'
+                  }`} />
+                  {/* Hiệu ứng xung nhịp radar (Ping) */}
+                  <div className={`absolute inset-0 rounded-full animate-ping opacity-30 ${
+                    distanceMeters <= 50 ? 'bg-emerald-400' : 'bg-rose-500'
+                  }`} />
+
+                  {/* Tâm Nhà hàng */}
+                  <div className="relative z-10 p-2 rounded-full bg-white shadow-md flex items-center justify-center">
+                    <MapPin className={`h-5 w-5 ${distanceMeters <= 50 ? 'text-emerald-600' : 'text-rose-600'}`} />
                   </div>
-                  <div className="text-sm font-bold">
-                    Cách {branchCoords.name}: {distanceMeters} mét
+
+                  {/* Chấm vị trí thiết bị */}
+                  <div
+                    className={`absolute z-20 w-3.5 h-3.5 rounded-full border-2 border-white shadow-lg ${
+                      distanceMeters <= 50 ? 'bg-emerald-500 top-4 right-6' : 'bg-rose-600 top-1 right-2 animate-ping'
+                    }`}
+                  />
+                </div>
+
+                {/* Thông số vị trí */}
+                <div className="flex-1 text-center sm:text-left space-y-1">
+                  <div className="flex items-center justify-center sm:justify-start gap-2">
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-black uppercase tracking-wider ${
+                      distanceMeters <= 50 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800 animate-pulse'
+                    }`}>
+                      {distanceMeters <= 50 ? '🟢 GPS HỢP LỆ (≤ 50M)' : '🔴 CẢNH BÁO: NGOÀI PHẠM VI (> 50M)'}
+                    </span>
                   </div>
+                  <div className="text-base sm:text-lg font-black text-slate-900 font-mono">
+                    Khoảng cách: {distanceMeters} mét
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Chi nhánh: <strong>{branchCoords.name}</strong> (Tọa độ: {currentLat.toFixed(4)}, {currentLon.toFixed(4)})
+                  </p>
                 </div>
               </div>
-              <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                distanceMeters <= 100 ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'
-              }`}>
-                {distanceMeters <= 100 ? 'Trong bán kính' : 'Vượt định mức'}
-              </span>
             </div>
 
             {/* GPS Simulation / Control */}
@@ -740,33 +784,49 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
                 <button
                   type="button"
                   onClick={setPresetInLocation}
-                  className="py-1.5 px-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg text-xs font-medium text-center"
+                  className="py-1.5 px-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg text-xs font-medium text-center shadow-sm"
                 >
-                  📍 Tại nhà hàng (0m - Hợp lệ)
+                  📍 Giả lập GPS tại nhà hàng (≤50m)
                 </button>
                 <button
                   type="button"
                   onClick={setPresetOutLocation}
-                  className="py-1.5 px-2 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg text-xs font-medium text-center"
+                  className="py-1.5 px-2 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg text-xs font-medium text-center shadow-sm"
                 >
-                  ⚠️ Cách 500m (Vi phạm)
+                  📍 Giả lập GPS ngoài chi nhánh (&gt;50m)
                 </button>
               </div>
             </div>
 
-            {/* Selfie Preview Area */}
-            <div className="relative aspect-square w-full max-w-[320px] mx-auto bg-slate-900 rounded-2xl overflow-hidden flex flex-col items-center justify-center border-2 border-slate-300 shadow-inner">
+            {/* KHUNG CAMERA SELFIE CÓ ĐƯỜNG DẪN KHUÔN MẶT HÌNH TRÒN (Task 13.6) */}
+            <div className="relative aspect-square w-full max-w-[320px] mx-auto bg-slate-950 rounded-3xl overflow-hidden flex flex-col items-center justify-center border-2 border-slate-300 shadow-xl">
               {isCameraActive ? (
                 <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
               ) : capturedSelfie ? (
                 <img src={capturedSelfie} alt="Selfie" className="w-full h-full object-cover" />
               ) : (
-                <div className="text-center p-6 text-slate-400">
-                  <Camera className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p className="text-xs">Chưa có ảnh selfie</p>
-                  <p className="text-[11px] text-slate-500 mt-1">Bấm nút bên dưới để mở camera hoặc tạo ảnh selfie</p>
+                <div className="text-center p-6 text-slate-400 z-10">
+                  <Camera className="w-12 h-12 mx-auto mb-2 opacity-60 text-slate-300" />
+                  <p className="text-xs font-bold text-slate-300">Chưa có ảnh selfie</p>
+                  <p className="text-[11px] text-slate-400 mt-1">Bấm nút bên dưới để mở camera hoặc tải ảnh</p>
                 </div>
               )}
+
+              {/* Đường dẫn khuôn mặt hình tròn / oval hỗ trợ căn góc chuẩn */}
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                <div className="w-48 h-56 rounded-full border-2 border-dashed border-white/70 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)] flex flex-col items-center justify-between p-3">
+                  <span className="text-[10px] font-bold text-white/90 bg-black/50 px-2 py-0.5 rounded-full mt-1">
+                    Trán
+                  </span>
+                  <span className="text-[10px] font-bold text-white/90 bg-black/50 px-2 py-0.5 rounded-full mb-1">
+                    Cằm
+                  </span>
+                </div>
+                <span className="text-[11px] font-black text-white bg-black/60 backdrop-blur-sm px-3 py-1 rounded-full mt-2">
+                  Căn khuôn mặt vào khung tròn
+                </span>
+              </div>
+
               <canvas ref={canvasRef} className="hidden" />
             </div>
 
@@ -1293,22 +1353,32 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
                             <td className="py-3 px-3 text-slate-600">{r.branch.branchName}</td>
                             <td className="py-3 px-3 text-xs">{r.requestDate}</td>
                             <td className="py-3 px-3 text-slate-700 max-w-[200px] truncate">{r.reason}</td>
+                            {/* Thẻ trạng thái Đồng phục rõ ràng (Task 13.6) */}
                             <td className="py-3 px-3">
-                              {r.missingUniformDetails ? (
-                                <span className="text-xs font-semibold text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-200">
-                                  {r.missingUniformDetails}
+                              {r.status === 'HOAN_TAT' ? (
+                                <span className="inline-flex items-center gap-1 text-xs font-black text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full border border-emerald-300">
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                                  <span>Đã thu hồi (100%)</span>
+                                </span>
+                              ) : r.status === 'DANG_GIU_LUONG' || r.missingUniformDetails ? (
+                                <span className="inline-flex items-center gap-1 text-xs font-black text-rose-800 bg-rose-100 px-2.5 py-1 rounded-full border border-rose-300 animate-pulse">
+                                  <AlertTriangle className="h-3.5 w-3.5 text-rose-600" />
+                                  <span>Chưa thu hồi: {r.missingUniformDetails || 'Thiếu đồng phục'}</span>
                                 </span>
                               ) : (
-                                <span className="text-xs text-slate-400">Chưa kiểm đếm</span>
+                                <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 px-2.5 py-1 rounded-full border border-amber-300">
+                                  <Clock className="h-3.5 w-3.5 text-amber-600" />
+                                  <span>Chờ kiểm đếm</span>
+                                </span>
                               )}
                             </td>
                             <td className="py-3 px-3">
                               <span
-                                className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                                className={`px-2.5 py-1 rounded-full text-xs font-black ${
                                   r.status === 'HOAN_TAT'
-                                    ? 'bg-emerald-100 text-emerald-800'
+                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                                     : r.status === 'DANG_GIU_LUONG'
-                                    ? 'bg-rose-100 text-rose-800 animate-pulse'
+                                    ? 'bg-rose-100 text-rose-800 border border-rose-300 animate-pulse'
                                     : r.status === 'BO_VIEC'
                                     ? 'bg-slate-200 text-slate-800'
                                     : r.status === 'CANCELLED'
@@ -1317,9 +1387,9 @@ export const HRModule: React.FC<HRModuleProps> = ({ currentUser }) => {
                                 }`}
                               >
                                 {r.status === 'HOAN_TAT'
-                                  ? 'Hoàn tất bàn giao'
+                                  ? 'ĐƯỢC PHÉP TRẢ LƯƠNG'
                                   : r.status === 'DANG_GIU_LUONG'
-                                  ? 'ĐANG GIỮ LƯƠNG'
+                                  ? 'TẠM KHÓA CHI LƯƠNG'
                                   : r.status === 'BO_VIEC'
                                   ? 'Tự ý bỏ việc (Lương = 0)'
                                   : r.status === 'CANCELLED'

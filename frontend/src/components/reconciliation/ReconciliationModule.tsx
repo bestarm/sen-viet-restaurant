@@ -15,7 +15,8 @@ import {
   RotateCw,
   FileCheck,
   ChevronRight,
-  ShieldAlert
+  ShieldAlert,
+  Sparkles
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useNotification } from '../../context/NotificationContext';
@@ -25,12 +26,13 @@ import {
   SupplierLoss,
   CukCukImportResponse
 } from '../../api/reconciliation';
+import { AutoNXTTable } from './AutoNXTTable';
 
 export const ReconciliationModule: React.FC = () => {
   const { user } = useAuth();
   const { showError, showSuccess, showWarning } = useNotification();
 
-  const [activeTab, setActiveTab] = useState<'summary' | 'cukcuk' | 'suppliers'>('summary');
+  const [activeTab, setActiveTab] = useState<'summary' | 'nxt' | 'cukcuk' | 'suppliers'>('summary');
   const [reconciliations, setReconciliations] = useState<ReconciliationSummary[]>([]);
   const [supplierLosses, setSupplierLosses] = useState<SupplierLoss[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -89,10 +91,21 @@ export const ReconciliationModule: React.FC = () => {
     }
   };
 
-  // Tính toán các chỉ số tóm tắt
+  // Tính toán 4 chỉ số KPI tổng quan tài chính
   const overThresholdCount = reconciliations.filter((r) => r.isOverThreshold).length;
   const totalLossAmount = reconciliations.reduce((sum, r) => sum + Number(r.unexplainedLossAmount || 0), 0);
   const totalExportedKg = reconciliations.reduce((sum, r) => sum + Number(r.exportedQty || 0), 0);
+  const totalExportedValue = reconciliations.reduce(
+    (sum, r) => sum + Number(r.exportedQty || 0) * Number(r.costPrice || 0),
+    0
+  );
+  const avgLossPercentage =
+    reconciliations.length > 0
+      ? (
+          reconciliations.reduce((sum, r) => sum + Number(r.unexplainedLossRate || 0), 0) /
+          reconciliations.length
+        ).toFixed(1)
+      : '0.0';
 
   // Xử lý nạp file CukCuk
   const handleFileUpload = async (e: React.FormEvent) => {
@@ -107,6 +120,24 @@ export const ReconciliationModule: React.FC = () => {
       loadData();
     } catch (err: any) {
       showNotice('error', err.response?.data?.message || 'Lỗi khi tải lên file CukCuk');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // Nạp 1-Click dữ liệu mẫu bán hàng CukCuk (Task 6)
+  const handleLoadSampleCukCuk = async () => {
+    try {
+      setIsUploading(true);
+      const res = await reconciliationApi.loadSampleCukCukData();
+      setImportResult(res);
+      showNotice(
+        'success',
+        `Nạp dữ liệu mẫu bán hàng CukCuk thành công! Đã ghi nhận ${res.totalGuestCount} khách, doanh thu ${res.totalRevenue.toLocaleString('vi-VN')} đ.`
+      );
+      loadData();
+    } catch (err: any) {
+      showNotice('error', 'Lỗi khi nạp dữ liệu mẫu CukCuk: ' + err.message);
     } finally {
       setIsUploading(false);
     }
@@ -222,67 +253,72 @@ export const ReconciliationModule: React.FC = () => {
         </div>
       </div>
 
-      {/* 4 THẺ TỔNG HỢP CHỈ SỐ CA HÔM NAY (KPI STATS) */}
+      {/* 4 THẺ TỔNG HỢP KPI TÀI CHÍNH Ở TRÊN CÙNG (FINANCIAL CLARITY) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* 1. Doanh số CukCuk POS */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-            <span>Doanh Thu CukCuk POS</span>
+            <span>Doanh Số CukCuk POS</span>
             <DollarSign className="h-4 w-4 text-emerald-600" />
           </div>
-          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-slate-900">
-            {importResult ? importResult.totalRevenue.toLocaleString('vi-VN') : '42,500,000'} <span className="text-xs font-normal text-slate-500">đ</span>
+          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-slate-900 font-mono">
+            {importResult ? importResult.totalRevenue.toLocaleString('vi-VN') : '42,500,000'} <span className="text-xs font-normal text-slate-500 font-sans">đ</span>
           </div>
           <p className="text-[11px] text-emerald-600 font-semibold mt-1 flex items-center gap-1">
             <CheckCircle2 className="h-3 w-3" />
-            <span>Đã khớp số liệu POS</span>
+            <span>Đã khớp số liệu POS ({importResult ? importResult.totalGuestCount : '150'} khách)</span>
           </p>
         </div>
 
+        {/* 2. Tiêu hao thực tế */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-            <span>Số Khách Dùng Buffet</span>
+            <span>Tiêu Hao Thực Tế (Xuất Bếp)</span>
             <Users className="h-4 w-4 text-blue-600" />
           </div>
-          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-slate-900">
-            {importResult ? importResult.totalGuestCount : '150'} <span className="text-xs font-normal text-slate-500">khách</span>
+          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-blue-900 font-mono">
+            {totalExportedValue > 0 ? totalExportedValue.toLocaleString('vi-VN') : '18,650,000'} <span className="text-xs font-normal text-slate-500 font-sans">đ</span>
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
-            120 Người lớn, 30 Trẻ em
+            Tổng xuất kho bếp: <strong className="text-slate-800">{totalExportedKg.toFixed(1)}</strong> kg/đĩa
           </p>
         </div>
 
+        {/* 3. Mức thất thoát ròng */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-            <span>Món Báo Đỏ Thất Thoát</span>
+            <span>Mức Thất Thoát Ròng</span>
             <ShieldAlert className="h-4 w-4 text-rose-600" />
           </div>
-          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-rose-600">
-            {overThresholdCount} <span className="text-xs font-normal text-slate-500">món (&gt;300k hoặc &gt;5%)</span>
+          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-rose-700 font-mono">
+            {totalLossAmount.toLocaleString('vi-VN')} <span className="text-xs font-normal text-slate-500 font-sans">đ</span>
           </div>
-          <p className="text-[11px] text-rose-600 font-semibold mt-1">
-            ⚠️ Bắn webhook Zalo Chủ chuỗi
+          <p className="text-[11px] text-rose-600 font-semibold mt-1 flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            <span>{overThresholdCount} món báo đỏ (&gt;300k hoặc &gt;5%)</span>
           </p>
         </div>
 
+        {/* 4. Tỷ lệ hao hụt trung bình */}
         <div className="p-4 sm:p-5 rounded-2xl bg-white border border-slate-200 shadow-sm">
           <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-            <span>Tổng Tiền Thất Thoát</span>
-            <TrendingDown className="h-4 w-4 text-rose-600" />
+            <span>Tỷ Lệ Hao Hụt</span>
+            <TrendingDown className="h-4 w-4 text-amber-600" />
           </div>
-          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-rose-700">
-            {totalLossAmount.toLocaleString('vi-VN')} <span className="text-xs font-normal text-slate-500">đ</span>
+          <div className="mt-2 font-extrabold text-xl sm:text-2xl text-amber-600 font-mono">
+            {avgLossPercentage}%
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
-            Tổng xuất kho: <strong>{totalExportedKg.toFixed(1)}</strong> đơn vị
+            Định mức chuẩn chuỗi: <strong className="text-emerald-700">&le; 3.0%</strong>
           </p>
         </div>
       </div>
 
       {/* TABS ĐIỀU HƯỚNG */}
-      <div className="flex border-b border-slate-200 bg-white rounded-t-2xl px-4 pt-3">
+      <div className="flex border-b border-slate-200 bg-white rounded-t-2xl px-4 pt-3 overflow-x-auto no-scrollbar">
         <button
           onClick={() => setActiveTab('summary')}
-          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all ${
+          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
             activeTab === 'summary'
               ? 'border-brand-600 text-brand-600 font-extrabold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -293,27 +329,39 @@ export const ReconciliationModule: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveTab('nxt')}
+          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+            activeTab === 'nxt'
+              ? 'border-brand-600 text-brand-600 font-extrabold'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Sparkles className="h-4 w-4 text-amber-500" />
+          <span>2. Bảng Nhập - Xuất - Tồn Chuẩn Sheet NXT (Mới)</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('cukcuk')}
-          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all ${
+          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
             activeTab === 'cukcuk'
               ? 'border-brand-600 text-brand-600 font-extrabold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
           <Upload className="h-4 w-4" />
-          <span>2. Nạp File Bán Hàng CukCuk POS</span>
+          <span>3. Nạp File Bán Hàng CukCuk POS</span>
         </button>
 
         <button
           onClick={() => setActiveTab('suppliers')}
-          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all ${
+          className={`btn-touch px-4 py-3 font-bold text-xs sm:text-sm border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
             activeTab === 'suppliers'
               ? 'border-brand-600 text-brand-600 font-extrabold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
           <Building2 className="h-4 w-4" />
-          <span>3. Báo Cáo Tỷ Lệ Hỏng Theo NCC</span>
+          <span>4. Báo Cáo Tỷ Lệ Hỏng Theo NCC</span>
         </button>
       </div>
 
@@ -352,15 +400,26 @@ export const ReconciliationModule: React.FC = () => {
               </div>
             </div>
 
-            <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-rose-700 bg-rose-50 px-3 py-1.5 rounded-lg border border-rose-200">
-              <input
-                type="checkbox"
-                checked={overThresholdOnly}
-                onChange={(e) => setOverThresholdOnly(e.target.checked)}
-                className="rounded border-rose-300 text-rose-600 focus:ring-rose-500"
-              />
-              <span>Chỉ hiển thị dòng BÁO ĐỎ thất thoát (&gt;300k hoặc &gt;5%)</span>
-            </label>
+            {/* Mobile / Desktop Toggle Nổi Bật Chỉ Xem Món Lệch */}
+            <button
+              type="button"
+              onClick={() => setOverThresholdOnly(!overThresholdOnly)}
+              className={`btn-touch px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition-all ${
+                overThresholdOnly
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+                  : 'bg-rose-50 text-rose-800 border border-rose-300 hover:bg-rose-100'
+              }`}
+            >
+              <AlertTriangle className={`h-4 w-4 ${overThresholdOnly ? 'text-white' : 'text-rose-600'}`} />
+              <span>{overThresholdOnly ? 'Đang lọc: Chỉ món lệch' : 'Chỉ xem món bị lệch'}</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                  overThresholdOnly ? 'bg-white text-rose-700' : 'bg-rose-600 text-white'
+                }`}
+              >
+                {overThresholdCount} món
+              </span>
+            </button>
           </div>
 
           {/* Bảng Dữ Liệu 6 Công Thức */}
@@ -377,20 +436,26 @@ export const ReconciliationModule: React.FC = () => {
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
-                <thead className="bg-slate-100 font-bold text-slate-700">
+                <thead className="bg-slate-100 font-bold text-slate-700 sticky top-0 z-20">
                   <tr>
-                    <th className="py-3 px-3">Món Ăn / Nguyên Liệu</th>
+                    {/* Ghim cố định Cột Tên Món bên trái */}
+                    <th className="py-3 px-3.5 sticky left-0 z-20 bg-slate-100 border-r border-slate-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] min-w-[180px]">
+                      Món Ăn / Nguyên Liệu
+                    </th>
                     <th className="py-3 px-2 text-right">Giá Vốn</th>
                     <th className="py-3 px-2 text-right bg-blue-50/70">1. Xuất Kho</th>
                     <th className="py-3 px-2 text-right bg-blue-50/70">2. Khách Dùng</th>
                     <th className="py-3 px-2 text-right bg-amber-50/70">3. Hụt Chế Biến</th>
                     <th className="py-3 px-2 text-right bg-amber-50/70">4. Hỏng Có Báo</th>
                     <th className="py-3 px-2 text-right bg-rose-50/80">5. Lệch Thất Thoát</th>
-                    <th className="py-3 px-2 text-right bg-rose-50/80">Tiền Thất Thoát</th>
                     <th className="py-3 px-2 text-right">Tỷ Lệ Lệch</th>
                     <th className="py-3 px-2 text-right">6. Tiêu Hao/Khách</th>
                     <th className="py-3 px-3 text-center">Người Kiểm Kho</th>
                     <th className="py-3 px-2 text-center">Cảnh Báo</th>
+                    {/* Ghim cố định Cột Tiền Thất Thoát bên phải */}
+                    <th className="py-3 px-3 text-right bg-rose-100 font-black text-rose-900 sticky right-0 z-20 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)] border-l border-rose-200 min-w-[125px]">
+                      Tiền Thất Thoát
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 bg-white">
@@ -402,13 +467,19 @@ export const ReconciliationModule: React.FC = () => {
                         key={row.id}
                         className={`transition-colors ${
                           isRed
-                            ? 'bg-rose-50/70 hover:bg-rose-100/60 font-semibold'
+                            ? 'bg-red-50 border-y border-red-200 text-red-950 font-semibold'
                             : 'hover:bg-slate-50'
                         }`}
                       >
-                        <td className="py-3 px-3">
-                          <div className={`font-bold ${isRed ? 'text-rose-900' : 'text-slate-900'}`}>
-                            {row.itemName}
+                        {/* Ghim cố định Cột Tên Món bên trái */}
+                        <td
+                          className={`py-3 px-3.5 sticky left-0 z-10 border-r border-slate-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${
+                            isRed ? 'bg-red-50' : 'bg-white'
+                          }`}
+                        >
+                          <div className={`font-bold flex items-center gap-1.5 ${isRed ? 'text-red-900' : 'text-slate-900'}`}>
+                            {isRed && <AlertTriangle className="h-4 w-4 text-red-600 flex-shrink-0 animate-pulse" />}
+                            <span>{row.itemName}</span>
                           </div>
                           <div className="text-[11px] text-slate-500 font-mono">
                             {row.itemCode} | {row.unit}
@@ -440,13 +511,8 @@ export const ReconciliationModule: React.FC = () => {
                         </td>
 
                         {/* 5. Lệch Thất Thoát */}
-                        <td className={`py-3 px-2 text-right font-extrabold ${isRed ? 'text-rose-700 bg-rose-100/40' : 'text-slate-800'}`}>
+                        <td className={`py-3 px-2 text-right font-extrabold ${isRed ? 'text-rose-700 bg-rose-100/50' : 'text-slate-800'}`}>
                           {row.unexplainedLossQty} {row.unit}
-                        </td>
-
-                        {/* Tiền Thất Thoát */}
-                        <td className={`py-3 px-2 text-right font-extrabold ${isRed ? 'text-rose-700 bg-rose-100/40' : 'text-slate-800'}`}>
-                          {Number(row.unexplainedLossAmount).toLocaleString('vi-VN')} đ
                         </td>
 
                         {/* Tỷ Lệ Lệch % */}
@@ -478,6 +544,15 @@ export const ReconciliationModule: React.FC = () => {
                             </span>
                           )}
                         </td>
+
+                        {/* Ghim cố định Cột Tiền Thất Thoát bên phải */}
+                        <td
+                          className={`py-3 px-3 text-right font-mono font-black sticky right-0 z-10 shadow-[-2px_0_5px_-2px_rgba(0,0,0,0.1)] border-l border-rose-200 ${
+                            isRed ? 'bg-red-100 text-rose-700' : 'bg-white text-slate-900'
+                          }`}
+                        >
+                          {Number(row.unexplainedLossAmount).toLocaleString('vi-VN')} đ
+                        </td>
                       </tr>
                     );
                   })}
@@ -489,7 +564,17 @@ export const ReconciliationModule: React.FC = () => {
       )}
 
       {/* ============================================================== */}
-      {/* TAB 2: NẠP FILE BÁN HÀNG CUKCUK POS                             */}
+      {/* TAB 2: BẢNG NHẬP - XUẤT - TỒN CHUẨN SHEET NXT (TASK-S4-01)       */}
+      {/* ============================================================== */}
+      {activeTab === 'nxt' && (
+        <AutoNXTTable
+          branchId={user?.branchId || 1}
+          branchName={user?.branchName || 'Sen Việt Thái Nguyên'}
+        />
+      )}
+
+      {/* ============================================================== */}
+      {/* TAB 3: NẠP FILE BÁN HÀNG CUKCUK POS                             */}
       {/* ============================================================== */}
       {activeTab === 'cukcuk' && (
         <div className="bg-white rounded-b-2xl border border-slate-200 shadow-sm p-6 space-y-6">
@@ -499,6 +584,38 @@ export const ReconciliationModule: React.FC = () => {
               <p className="text-xs text-slate-500 mt-1">
                 Hệ thống tự động bóc tách doanh thu ca, số khách người lớn, số khách trẻ em và các gói vé buffet để đối soát.
               </p>
+            </div>
+
+            {/* Nút nạp dữ liệu mẫu 1-Click cho Demo */}
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2.5">
+                <div className="h-10 w-10 rounded-xl bg-amber-500 text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+                  <Sparkles className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="font-bold text-slate-900 text-xs sm:text-sm">
+                    Trải nghiệm nhanh không cần file Excel thực tế
+                  </div>
+                  <div className="text-[11px] text-slate-600">
+                    Nạp ngay doanh số ca 48.500.000 đ, 186 khách buffet và tính toán chênh lệch tự động
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleLoadSampleCukCuk}
+                disabled={isUploading}
+                className="btn-touch px-4 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white font-extrabold text-xs rounded-xl shadow-md shadow-amber-600/25 flex items-center gap-1.5 flex-shrink-0"
+              >
+                {isUploading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <Sparkles className="h-4 w-4" />
+                    <span>Nạp Dữ Liệu Mẫu CukCuk (1-Click)</span>
+                  </>
+                )}
+              </button>
             </div>
 
             <form onSubmit={handleFileUpload} className="space-y-4">
@@ -601,7 +718,7 @@ export const ReconciliationModule: React.FC = () => {
       )}
 
       {/* ============================================================== */}
-      {/* TAB 3: BÁO CÁO TỶ LỆ HỎNG THEO NHÀ CUNG CẤP                    */}
+      {/* TAB 4: BÁO CÁO TỶ LỆ HỎNG THEO NHÀ CUNG CẤP                    */}
       {/* ============================================================== */}
       {activeTab === 'suppliers' && (
         <div className="bg-white rounded-b-2xl border border-slate-200 shadow-sm p-6 space-y-4">
