@@ -1,5 +1,5 @@
 # ==============================================================================
-# Multi-stage Dockerfile cho Frontend React SPA
+# Multi-stage Dockerfile cho Frontend React SPA (Production Build)
 # ==============================================================================
 
 # Stage 1: Build mã nguồn bằng Node.js 20
@@ -7,8 +7,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
+RUN npm install
+
 COPY . .
-RUN if [ ! -d dist ]; then npm ci && npm run build; fi
+RUN npm run build
 
 # Stage 2: Nginx Web Server siêu nhẹ
 FROM nginx:alpine AS runner
