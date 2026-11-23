@@ -41,6 +41,7 @@ client_docs/
 senviet_project_docs*/
 private/
 confidential/
+remove/
 
 # ==============================================================================
 # 2. BẢO MẬT & THÔNG TIN NHẠY CẢM (SECURITY & CREDENTIALS)

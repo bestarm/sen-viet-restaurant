@@ -1,14 +1,20 @@
 import * as XLSX from 'xlsx';
-import { db } from '../db/schema';
+import { db, ProcessedDish } from '../db/schema';
 import { simulateLatency, initializeDatabaseIfEmpty } from '../db/dbService';
 import {
   WarehouseLocation,
   getItemDefaultLocation,
   WAREHOUSE_LOCATIONS as DEFAULT_WAREHOUSE_LOCATIONS,
   WAREHOUSE_LOCATION_NAMES,
+  PreProcessingCategory,
+  PreProcessingCategoryMeta,
+  PRE_PROCESSING_CATEGORIES,
+  PRE_PROCESSING_CATEGORY_MAP,
+  getItemPreProcessingCategory,
 } from '../types/warehouse';
 
-export type { WarehouseLocation };
+export type { WarehouseLocation, ProcessedDish, PreProcessingCategory, PreProcessingCategoryMeta };
+export { PRE_PROCESSING_CATEGORIES, PRE_PROCESSING_CATEGORY_MAP, getItemPreProcessingCategory };
 
 export interface Supplier {
   id: number;
@@ -37,6 +43,8 @@ export interface ImportBatch {
   itemId: number;
   itemCode?: string;
   itemName?: string;
+  category?: string;
+  preProcessingCategory?: PreProcessingCategory;
   branchId?: number;
   branchName?: string;
   importDate: string;
@@ -152,6 +160,7 @@ export interface WarehouseDocumentItem {
   shortageAmount?: number;        // Tiền phạt/trừ do cân thiếu
   reason?: string;
   lossCategory?: 'HAI_SAN_CHET_NCC' | 'HONG_BAO_QUAN_KHO' | 'BEP_LAM_HONG' | string;
+  preProcessingCategory?: PreProcessingCategory; // 1 trong 11 danh mục Kho Trước Chế Biến
   location?: WarehouseLocation;
   targetLocation?: WarehouseLocation;
   warehouseLocation?: string;
@@ -209,6 +218,7 @@ export interface CreateDocumentRequest {
     shortageAmount?: number;
     reason?: string;
     lossCategory?: 'HAI_SAN_CHET_NCC' | 'HONG_BAO_QUAN_KHO' | 'BEP_LAM_HONG' | string;
+    preProcessingCategory?: PreProcessingCategory;
     location?: WarehouseLocation;
     targetLocation?: WarehouseLocation;
     warehouseLocation?: string;
@@ -669,6 +679,15 @@ export const warehouseApi = {
         (data.warehouseLocation as WarehouseLocation) ||
         getItemWarehouseLocation(foundItem?.itemCode, foundItem?.category);
 
+      const itemPreCategory: PreProcessingCategory =
+        it.preProcessingCategory ||
+        getItemPreProcessingCategory(
+          foundItem?.itemCode,
+          foundItem?.category,
+          foundItem?.costGroup,
+          foundItem?.itemName
+        );
+
       return {
         id: Date.now() + idx,
         itemId: it.itemId,
@@ -686,6 +705,7 @@ export const warehouseApi = {
         shortageAmount: shortage,
         reason: it.reason,
         lossCategory: it.lossCategory,
+        preProcessingCategory: itemPreCategory,
         location: itemLocation,
         targetLocation: it.targetLocation || targetLocation,
         warehouseLocation: itemLocation,
@@ -761,6 +781,8 @@ export const warehouseApi = {
           unitPrice: it.unitPrice,
           unit: it.unit || 'kg',
           status: 'ACTIVE',
+          category: it.preProcessingCategory ? PRE_PROCESSING_CATEGORY_MAP[it.preProcessingCategory] : 'Nguyên liệu',
+          preProcessingCategory: it.preProcessingCategory,
           location: itemLoc,
           warehouseLocation: itemLoc,
         };
@@ -1775,5 +1797,291 @@ export const warehouseApi = {
 
     await db.reconciliationPeriods.add(newPeriod);
     return newPeriod;
+  },
+
+  // =========================================================================
+  // MÔ HÌNH KHO 2 TẦNG (TASK-FLOW-01 & DUAL INVENTORY OPERATIONS)
+  // =========================================================================
+
+  /**
+   * Danh sách 11 Nhóm Danh Mục Quy Chuẩn Cho Kho Trước Chế Biến
+   */
+  getPreProcessingCategories: (): PreProcessingCategoryMeta[] => {
+    return PRE_PROCESSING_CATEGORIES;
+  },
+
+  /**
+   * Truy vấn tồn kho theo 11 nhóm Kho Trước Chế Biến
+   */
+  getPreProcessingStocks: async (params?: {
+    branchId?: number;
+    category?: PreProcessingCategory | string;
+    search?: string;
+  }): Promise<InventoryStock[]> => {
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    const stocks = await warehouseApi.getStocks({ branchId: params?.branchId });
+    const items = await db.items.toArray();
+    const itemMap = new Map(items.map((i) => [i.id, i]));
+
+    let filtered = stocks.map((s: InventoryStock) => {
+      const it = itemMap.get(s.itemId);
+      const preCat = getItemPreProcessingCategory(s.itemCode, it?.category, it?.costGroup, s.itemName);
+      return {
+        ...s,
+        preProcessingCategory: preCat,
+      };
+    });
+
+    if (params?.category && params.category !== 'ALL') {
+      filtered = filtered.filter((s: any) => s.preProcessingCategory === params.category);
+    }
+
+    if (params?.search && params.search.trim()) {
+      const q = params.search.trim().toLowerCase();
+      filtered = filtered.filter(
+        (s: InventoryStock) =>
+          s.itemName.toLowerCase().includes(q) ||
+          s.itemCode.toLowerCase().includes(q) ||
+          (s.batchCode && s.batchCode.toLowerCase().includes(q))
+      );
+    }
+
+    return filtered;
+  },
+
+  // --- KHO SAU CHẾ BIẾN (Processed Dishes / Finished Dishes) ---
+
+  /**
+   * Lấy danh sách các món ăn hoàn chỉnh trong Kho Sau Chế Biến theo chi nhánh
+   */
+  getProcessedDishes: async (params?: {
+    branchId?: number;
+    category?: string;
+    search?: string;
+  }): Promise<ProcessedDish[]> => {
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(60, 100);
+
+    let list = await db.processedDishes.toArray();
+
+    if (params?.branchId) {
+      list = list.filter((d) => !d.branchId || d.branchId === params.branchId);
+    }
+
+    if (params?.category && params.category !== 'ALL') {
+      const cat = params.category.toLowerCase();
+      list = list.filter((d) => d.category.toLowerCase().includes(cat));
+    }
+
+    if (params?.search && params.search.trim()) {
+      const q = params.search.trim().toLowerCase();
+      list = list.filter(
+        (d) =>
+          d.dishName.toLowerCase().includes(q) ||
+          d.dishCode.toLowerCase().includes(q)
+      );
+    }
+
+    return list;
+  },
+
+  /**
+   * Lấy chi tiết món ăn hoàn chỉnh theo ID
+   */
+  getProcessedDishById: async (id: number): Promise<ProcessedDish | null> => {
+    await initializeDatabaseIfEmpty();
+    const dish = await db.processedDishes.get(id);
+    return dish || null;
+  },
+
+  /**
+   * Lấy món hoàn chỉnh liên kết với nguyên liệu thô đầu vào
+   */
+  getProcessedDishByRawItemId: async (
+    rawItemId: number,
+    branchId?: number
+  ): Promise<ProcessedDish | null> => {
+    await initializeDatabaseIfEmpty();
+    let query = db.processedDishes.where('rawItemId').equals(rawItemId);
+    const results = await query.toArray();
+    if (branchId) {
+      return results.find((d) => d.branchId === branchId) || results[0] || null;
+    }
+    return results[0] || null;
+  },
+
+  /**
+   * Tăng tồn kho Kho Sau Chế Biến khi hoàn thành Cân Mẻ Chế Biến (Nút 2 Bếp)
+   */
+  addProcessedDishStock: async (params: {
+    dishId?: number;
+    dishCode?: string;
+    rawItemId?: number;
+    branchId: number;
+    quantity: number;
+    unit?: string;
+  }): Promise<ProcessedDish> => {
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    let dish: ProcessedDish | undefined;
+
+    if (params.dishId) {
+      dish = await db.processedDishes.get(params.dishId);
+    } else if (params.dishCode) {
+      dish = await db.processedDishes
+        .where('dishCode')
+        .equals(params.dishCode)
+        .filter((d) => !params.branchId || d.branchId === params.branchId)
+        .first();
+    } else if (params.rawItemId) {
+      dish = await db.processedDishes
+        .where('rawItemId')
+        .equals(params.rawItemId)
+        .filter((d) => !params.branchId || d.branchId === params.branchId)
+        .first();
+    }
+
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    if (dish) {
+      const newQty = Number(((dish.quantity || 0) + params.quantity).toFixed(2));
+      await db.processedDishes.update(dish.id, {
+        quantity: newQty,
+        status: newQty > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
+        lastUpdatedAt: now,
+      });
+      const updated = await db.processedDishes.get(dish.id);
+      return updated!;
+    } else {
+      // Tự động tạo món mới trong kho sau chế biến nếu chưa tồn tại
+      const rawItem = params.rawItemId ? await db.items.get(params.rawItemId) : null;
+      const newDish: ProcessedDish = {
+        id: Date.now(),
+        dishCode: params.dishCode || `DISH-${Date.now().toString().slice(-4)}`,
+        dishName: rawItem ? `${rawItem.itemName} chế biến` : 'Món chế biến mới',
+        category: 'Món Nóng',
+        rawItemId: params.rawItemId,
+        rawItemCode: rawItem?.itemCode,
+        rawItemName: rawItem?.itemName,
+        branchId: params.branchId,
+        branchCode: params.branchId === 2 ? 'QV' : 'TN',
+        quantity: Number(params.quantity.toFixed(2)),
+        unit: params.unit || 'đĩa',
+        status: 'AVAILABLE',
+        lastUpdatedAt: now,
+      };
+      await db.processedDishes.add(newDish);
+      return newDish;
+    }
+  },
+
+  /**
+   * Khấu trừ tồn kho Kho Sau Chế Biến khi bấm Ra Line (+1 hoặc nhập đĩa) (Nút 3 Bếp)
+   * Chặn cứng nếu số lượng yêu cầu vượt quá tồn khả dụng trong Kho Sau Chế Biến!
+   */
+  deductProcessedDishStock: async (params: {
+    dishId?: number;
+    dishCode?: string;
+    rawItemId?: number;
+    branchId: number;
+    quantity: number;
+  }): Promise<{ success: boolean; dish: ProcessedDish; remainingStock: number }> => {
+    await initializeDatabaseIfEmpty();
+    await simulateLatency(80, 120);
+
+    let dish: ProcessedDish | undefined;
+
+    if (params.dishId) {
+      dish = await db.processedDishes.get(params.dishId);
+    } else if (params.dishCode) {
+      dish = await db.processedDishes
+        .where('dishCode')
+        .equals(params.dishCode)
+        .filter((d) => !params.branchId || d.branchId === params.branchId)
+        .first();
+    } else if (params.rawItemId) {
+      dish = await db.processedDishes
+        .where('rawItemId')
+        .equals(params.rawItemId)
+        .filter((d) => !params.branchId || d.branchId === params.branchId)
+        .first();
+    }
+
+    if (!dish) {
+      throw new Error('Không tìm thấy món ăn trong Kho Sau Chế Biến!');
+    }
+
+    if ((dish.quantity || 0) < params.quantity) {
+      throw new Error(
+        `Số lượng yêu cầu (${params.quantity} ${dish.unit}) vượt quá tồn kho thành phẩm (${dish.quantity} ${dish.unit}). Kho sau chế biến không đủ món để ra line!`
+      );
+    }
+
+    const remaining = Number((dish.quantity - params.quantity).toFixed(2));
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    await db.processedDishes.update(dish.id, {
+      quantity: remaining,
+      status: remaining <= 0 ? 'OUT_OF_STOCK' : 'AVAILABLE',
+      lastUpdatedAt: now,
+    });
+
+    const updated = await db.processedDishes.get(dish.id);
+    return {
+      success: true,
+      dish: updated!,
+      remainingStock: remaining,
+    };
+  },
+
+  /**
+   * Tạo món ăn mới trong Kho Sau Chế Biến
+   */
+  createProcessedDish: async (data: Partial<ProcessedDish>): Promise<ProcessedDish> => {
+    await initializeDatabaseIfEmpty();
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const newDish: ProcessedDish = {
+      id: data.id || Date.now(),
+      dishCode: data.dishCode || `DISH-${Date.now().toString().slice(-4)}`,
+      dishName: data.dishName || 'Món ăn mới',
+      category: data.category || 'Món Nóng',
+      rawItemId: data.rawItemId,
+      rawItemCode: data.rawItemCode,
+      rawItemName: data.rawItemName,
+      branchId: data.branchId || 1,
+      branchCode: data.branchCode || (data.branchId === 2 ? 'QV' : 'TN'),
+      quantity: data.quantity || 0,
+      unit: data.unit || 'đĩa',
+      standardPortionWeight: data.standardPortionWeight,
+      costPrice: data.costPrice,
+      status: (data.quantity || 0) > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
+      lastUpdatedAt: now,
+    };
+    await db.processedDishes.add(newDish);
+    return newDish;
+  },
+
+  /**
+   * Cập nhật thông tin món ăn trong Kho Sau Chế Biến
+   */
+  updateProcessedDish: async (id: number, data: Partial<ProcessedDish>): Promise<ProcessedDish> => {
+    await initializeDatabaseIfEmpty();
+    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    await db.processedDishes.update(id, {
+      ...data,
+      lastUpdatedAt: now,
+      status:
+        data.quantity !== undefined
+          ? data.quantity > 0
+            ? 'AVAILABLE'
+            : 'OUT_OF_STOCK'
+          : data.status,
+    });
+    const updated = await db.processedDishes.get(id);
+    if (!updated) throw new Error('Không tìm thấy món ăn trong Kho Sau Chế Biến');
+    return updated;
   },
 };

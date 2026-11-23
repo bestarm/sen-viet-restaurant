@@ -42,8 +42,19 @@ import {
   QuickAddLineItemRequest,
   TakeOutLog,
   DamageReport,
+  ProcessedDish,
+  PreProcessingCategory,
 } from '../../api/kitchen';
-import { warehouseApi, ImportBatch, Supplier, WAREHOUSE_LOCATIONS } from '../../api/warehouse';
+import {
+  warehouseApi,
+  ImportBatch,
+  Supplier,
+  WAREHOUSE_LOCATIONS,
+} from '../../api/warehouse';
+import {
+  PRE_PROCESSING_CATEGORIES,
+  getItemPreProcessingCategory,
+} from '../../types/warehouse';
 import { compressImage, CompressionResult } from '../../utils/imageCompressor';
 
 export type KitchenStation = 'ALL' | 'BEP_NONG' | 'BEP_LANH' | 'BAR' | 'RA_LINE';
@@ -222,15 +233,18 @@ export const KitchenModule: React.FC = () => {
   const [items, setItems] = useState<Item[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeBatches, setActiveBatches] = useState<BatchResponse[]>([]);
+  const [processedDishes, setProcessedDishes] = useState<ProcessedDish[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Trạng thái mở các Modals
-  const [activeModal, setActiveModal] = useState<'takeOut' | 'batch' | 'lineItem' | 'damage' | null>(null);
+  // Trạng thái mở các Modals (Chuẩn hóa 5 Nút Bếp)
+  const [activeModal, setActiveModal] = useState<'takeOut' | 'batch' | 'lineItem' | 'damage' | 'leftoverWaste' | null>(null);
 
-  // --- Nút 1: Lấy hàng state ---
+  // --- Nút 1: Lấy hàng state (Kho Trước Chế Biến 11 nhóm & Đa dạng ĐVT) ---
+  const [selectedPreCategory, setSelectedPreCategory] = useState<PreProcessingCategory | 'ALL'>('ALL');
   const [selectedItemId, setSelectedItemId] = useState<number | ''>('');
   const [takeOutQty, setTakeOutQty] = useState<number | ''>('');
+  const [takeOutUnit, setTakeOutUnit] = useState<string>('kg');
   const [takeOutNote, setTakeOutNote] = useState<string>('');
   const [isTakingOut, setIsTakingOut] = useState<boolean>(false);
   const [availableStock, setAvailableStock] = useState<number | null>(null);
@@ -238,6 +252,20 @@ export const KitchenModule: React.FC = () => {
   // TASK-S1-03: Lịch sử lấy hàng trong ca & Hủy lấy hàng
   const [takeOutLogs, setTakeOutLogs] = useState<TakeOutLog[]>([]);
   const [cancellingTakeOutId, setCancellingTakeOutId] = useState<number | null>(null);
+
+  // --- Nút 5: Tạo Đồ Ăn Thừa Cuối Ca state (Bắt buộc có ảnh) ---
+  const [leftoverDishId, setLeftoverDishId] = useState<number | ''>('');
+  const [leftoverItemName, setLeftoverItemName] = useState<string>('');
+  const [leftoverQty, setLeftoverQty] = useState<number | ''>('');
+  const [leftoverUnit, setLeftoverUnit] = useState<string>('đĩa');
+  const [leftoverLocation, setLeftoverLocation] = useState<'LINE' | 'BEP'>('LINE');
+  const [leftoverReason, setLeftoverReason] = useState<string>('Khách dùng không hết');
+  const [leftoverShift, setLeftoverShift] = useState<'CA_TOI' | 'CA_SANG'>('CA_TOI');
+  const [leftoverNote, setLeftoverNote] = useState<string>('');
+  const [leftoverPhoto, setLeftoverPhoto] = useState<CompressionResult | null>(null);
+  const [isCompressingLeftoverPhoto, setIsCompressingLeftoverPhoto] = useState<boolean>(false);
+  const [isSubmittingLeftover, setIsSubmittingLeftover] = useState<boolean>(false);
+  const leftoverPhotoInputRef = useRef<HTMLInputElement>(null);
 
   // TASK-LOGIC-01: Lấy tồn kho khả dụng tức thời của món được chọn
   const fetchAvailableStock = async (itemId: number) => {
@@ -464,7 +492,11 @@ export const KitchenModule: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setIsLoading(true);
-      const [itemList, recipeList, batchList, takeOutList, damageList, suppliers] =
+      const currentBranchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+      const [itemList, recipeList, batchList, takeOutList, damageList, suppliers, dishesList] =
         await Promise.all([
           kitchenApi.getBuffetItems(),
           kitchenApi.getRecipes(),
@@ -472,6 +504,7 @@ export const KitchenModule: React.FC = () => {
           kitchenApi.getTakeOutLogs(),
           kitchenApi.getDamageReports(),
           warehouseApi.getSuppliers(),
+          warehouseApi.getProcessedDishes({ branchId: currentBranchId }),
         ]);
       setItems(itemList);
       setRecipes(recipeList);
@@ -479,11 +512,20 @@ export const KitchenModule: React.FC = () => {
       setTakeOutLogs(takeOutList);
       setDamageReports(damageList);
       setSuppliersList(suppliers);
+      setProcessedDishes(dishesList);
+
+      if (dishesList.length > 0 && !leftoverDishId) {
+        setLeftoverDishId(dishesList[0].id);
+        setLeftoverItemName(dishesList[0].dishName);
+        setLeftoverUnit(dishesList[0].unit || 'đĩa');
+      }
+
       if (suppliers.length > 0 && !receiveSupplierId) {
         setReceiveSupplierId(suppliers[0].id);
       }
       if (itemList.length > 0 && !selectedItemId) {
         setSelectedItemId(itemList[0].id);
+        setTakeOutUnit(itemList[0].unit || 'kg');
         setBatchItemId(itemList[0].id);
         setDamageItemId(itemList[0].id);
         setReceiveItemId(itemList[0].id);
@@ -625,11 +667,11 @@ export const KitchenModule: React.FC = () => {
       const res = await kitchenApi.recordTakeOut({
         itemId: item.id,
         quantity: qty,
-        unit: item.unit,
+        unit: takeOutUnit || item.unit || 'kg',
         note: takeOutNote || 'Lấy hàng ra bếp sơ chế',
         branchId,
       });
-      showNotice('success', res.message || `Đã xuất kho ${qty} ${item.unit} ${item.itemName}`);
+      showNotice('success', res.message || `Đã xuất kho ${qty} ${takeOutUnit || item.unit} ${item.itemName}`);
       // TASK-S1-03 & TASK-LOGIC-01: Reset toàn bộ form lấy hàng về rỗng
       setTakeOutQty('');
       setTakeOutNote('');
@@ -843,19 +885,39 @@ export const KitchenModule: React.FC = () => {
   };
 
   // -------------------------------------------------------------
-  // TASK-S1-04: Xử lý Nút 3: RA LINE (+1) kèm Cooldown 1.5s & Phản hồi Haptic/Visual
+  // TASK-FLOW-04: Xử lý Nút 3: RA LINE (+1) kèm Trừ Kho Sau Chế Biến, Cooldown 1.5s & Phản hồi Haptic/Visual
   // -------------------------------------------------------------
-  const handleLineItemInc = async (item: Item) => {
+  const handleLineItemInc = async (target: Item | ProcessedDish) => {
+    const isDish = 'dishCode' in target;
+    const targetId = target.id;
+    const currentBranchId =
+      user?.branchId ||
+      (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+    // Tìm món tương ứng trong Kho Sau Chế Biến
+    let matchedDish: ProcessedDish | undefined = isDish
+      ? (target as ProcessedDish)
+      : processedDishes.find((d) => d.rawItemId === target.id);
+
+    // CẢNH BÁO NẾU KHO SAU CHẾ BIẾN KHÔNG ĐỦ HOẶC HẾT HÀNG
+    if (matchedDish && (matchedDish.quantity || 0) <= 0) {
+      showNotice(
+        'error',
+        `⚠️ Món [${matchedDish.dishName}] trong Kho Sau Chế Biến đã hết tồn (0 ${matchedDish.unit})! Vui lòng nấu và cân mẻ tại NÚT 2 trước khi ra line!`
+      );
+      return;
+    }
+
     // Khóa nút tối thiểu 1.5 giây sau mỗi lần bấm để tránh spam click
-    if (loadingLineButtons[item.id] || cooldownButtons[item.id]) return;
+    if (loadingLineButtons[targetId] || cooldownButtons[targetId]) return;
 
     // Khóa nút tức thì & kích hoạt cooldown lock tối thiểu 1.5 giây (1500ms)
-    setLoadingLineButtons((prev) => ({ ...prev, [item.id]: true }));
-    setCooldownButtons((prev) => ({ ...prev, [item.id]: true }));
+    setLoadingLineButtons((prev) => ({ ...prev, [targetId]: true }));
+    setCooldownButtons((prev) => ({ ...prev, [targetId]: true }));
 
     // Kích hoạt hiệu ứng phản hồi: nảy số +1 (floating badge) và rung nhẹ phản hồi (haptic/visual)
-    setAnimatingLineItemId(item.id);
-    setShakingLineItemId(item.id);
+    setAnimatingLineItemId(targetId);
+    setShakingLineItemId(targetId);
 
     // Haptic feedback cho thiết bị màn hình cảm ứng / tablet bếp
     if (typeof window !== 'undefined' && 'vibrate' in navigator) {
@@ -877,31 +939,127 @@ export const KitchenModule: React.FC = () => {
 
     // Đảm bảo mở khóa cooldown tối thiểu 1.5 giây (1500ms)
     setTimeout(() => {
-      setCooldownButtons((prev) => ({ ...prev, [item.id]: false }));
+      setCooldownButtons((prev) => ({ ...prev, [targetId]: false }));
     }, 1500);
 
     // Sinh requestId duy nhất để server loại trừ request trùng khi mạng chập chờn
-    const idempotencyRequestId = `line-${item.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const idempotencyRequestId = `line-${targetId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
     try {
       await kitchenApi.recordLineItem({
-        itemId: item.id,
+        itemId: isDish ? (target as ProcessedDish).rawItemId : target.id,
+        dishId: isDish ? target.id : matchedDish?.id,
+        dishCode: isDish ? (target as ProcessedDish).dishCode : matchedDish?.dishCode,
         quantity: 1,
+        branchId: currentBranchId,
         requestId: idempotencyRequestId,
       });
+
+      // Cập nhật tồn kho sau chế biến trong state processedDishes
+      if (matchedDish) {
+        setProcessedDishes((prev) =>
+          prev.map((d) => {
+            if (d.id === matchedDish!.id) {
+              const nextQty = Math.max(0, Number(((d.quantity || 0) - 1).toFixed(2)));
+              return { ...d, quantity: nextQty, status: nextQty <= 0 ? 'OUT_OF_STOCK' : 'AVAILABLE' };
+            }
+            return d;
+          })
+        );
+      }
 
       // Tăng counter hiển thị trên giao diện
       setLineCounters((prev) => ({
         ...prev,
-        [item.id]: (prev[item.id] || 0) + 1,
+        [targetId]: (prev[targetId] || 0) + 1,
       }));
 
-      showNotice('success', `+1 đĩa [${item.itemName}] đã ra line buffet!`);
+      const dishName = isDish ? (target as ProcessedDish).dishName : (target as Item).itemName;
+      showNotice('success', `+1 đĩa [${dishName}] đã ra line buffet! (Đã trừ tồn Kho Sau Chế Biến)`);
     } catch (err: any) {
-      showNotice('error', err.response?.data?.message || 'Lỗi khi ghi nhận ra line');
+      showNotice('error', err.response?.data?.message || err.message || 'Lỗi khi ghi nhận ra line');
     } finally {
       // Mở lại loading của nút sau khi request ghi nhận xong
-      setLoadingLineButtons((prev) => ({ ...prev, [item.id]: false }));
+      setLoadingLineButtons((prev) => ({ ...prev, [targetId]: false }));
+    }
+  };
+
+  // -------------------------------------------------------------
+  // TASK-FLOW-05: Xử lý Nút 5: TẠO ĐỒ ĂN THỪA CUỐI CA (Bắt buộc có ảnh)
+  // -------------------------------------------------------------
+  const handleLeftoverPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setIsCompressingLeftoverPhoto(true);
+      const res = await compressImage(file, 1280, 720, 0.75, {
+        branchName:
+          user?.branchName || (user?.branchId === 2 ? 'Sen Việt - Quế Võ' : 'Sen Việt - Thái Nguyên'),
+        userName: user?.fullName || 'Bếp viên',
+        docType: 'Đồ ăn thừa cuối ca',
+        docTypeName: 'Đồ ăn thừa cuối ca',
+      });
+      setLeftoverPhoto(res);
+      showNotice('success', 'Đã chụp & nén ảnh bàn cân thức ăn thừa kèm Watermark thành công');
+    } catch (err) {
+      console.error('Lỗi khi nén ảnh thức ăn thừa:', err);
+      showNotice('error', 'Lỗi khi chụp ảnh thức ăn thừa');
+    } finally {
+      setIsCompressingLeftoverPhoto(false);
+      if (leftoverPhotoInputRef.current) leftoverPhotoInputRef.current.value = '';
+    }
+  };
+
+  const handleLeftoverWasteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const qty = typeof leftoverQty === 'string' ? parseFloat(leftoverQty) : leftoverQty;
+    if (!leftoverQty || isNaN(qty) || qty <= 0) {
+      showNotice('error', 'Vui lòng nhập số lượng thức ăn thừa hợp lệ (> 0)');
+      return;
+    }
+
+    // VALIDATE CHẶN CỨNG: BẮT BUỘC ẢNH CHỤP ĐÍNH KÈM
+    if (!leftoverPhoto || !leftoverPhoto.dataUrl) {
+      showNotice('error', '⚠️ BẮT BUỘC phải chụp ảnh mặt bàn cân hoặc đĩa thức ăn thừa đính kèm để chống gian lận!');
+      return;
+    }
+
+    try {
+      setIsSubmittingLeftover(true);
+      const selDish = processedDishes.find((d) => d.id === Number(leftoverDishId));
+      const finalItemName = selDish?.dishName || leftoverItemName || 'Thức ăn thừa cuối ca';
+      const currentBranchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+      await kitchenApi.recordLeftoverWaste({
+        dishId: selDish?.id,
+        itemId: selDish?.rawItemId,
+        itemName: finalItemName,
+        quantity: qty,
+        unit: leftoverUnit || selDish?.unit || 'đĩa',
+        locationType: leftoverLocation,
+        reason: leftoverReason,
+        imageUrl: leftoverPhoto.dataUrl,
+        note: leftoverNote,
+        shift: leftoverShift,
+        branchId: currentBranchId,
+      });
+
+      showNotice(
+        'success',
+        `✅ Đã ghi nhận ${qty} ${leftoverUnit} thức ăn thừa [${finalItemName}] (${leftoverLocation === 'LINE' ? 'Quầy Line' : 'Kho Bếp'}) thành công!`
+      );
+      setActiveModal(null);
+      setLeftoverQty('');
+      setLeftoverNote('');
+      setLeftoverPhoto(null);
+      loadInitialData();
+    } catch (err: any) {
+      console.error('Lỗi khi ghi nhận thức ăn thừa:', err);
+      showNotice('error', err.response?.data?.message || err.message || 'Lỗi khi ghi nhận thức ăn thừa');
+    } finally {
+      setIsSubmittingLeftover(false);
     }
   };
 
@@ -1229,7 +1387,7 @@ export const KitchenModule: React.FC = () => {
           </div>
         </button>
 
-        {/* 4 NÚT BẤM TÁC VỤ CHÍNH CHO BẾP (TASK-PC-01: PC 2X2 GRID CHUẨN HÓA) */}
+        {/* 5 NÚT BẤM TÁC VỤ CHÍNH CHO BẾP (SPEC-KITCHEN-5-BUTTONS-DUAL-INVENTORY-2026) */}
         <div className="grid grid-cols-2 gap-2.5">
           {/* NÚT 1: LẤY HÀNG (Màu Xanh Dương) */}
           <button
@@ -1251,7 +1409,7 @@ export const KitchenModule: React.FC = () => {
             </div>
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">LẤY HÀNG</div>
-              <div className="text-[11px] text-blue-100 mt-0.5">Xuất kho ra bếp</div>
+              <div className="text-[11px] text-blue-100 mt-0.5">Kho trước chế biến</div>
             </div>
           </button>
 
@@ -1280,7 +1438,7 @@ export const KitchenModule: React.FC = () => {
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">CHẾ BIẾN MẺ</div>
               <div className="text-[11px] text-emerald-100 mt-0.5">
-                {activeBatches.length > 0 ? `${activeBatches.length} mẻ chờ cân` : 'Mở & cân mẻ'}
+                {activeBatches.length > 0 ? `${activeBatches.length} mẻ chờ cân` : 'Nhập Kho Sau'}
               </div>
             </div>
           </button>
@@ -1298,7 +1456,7 @@ export const KitchenModule: React.FC = () => {
             </div>
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">RA LINE (+1)</div>
-              <div className="text-[11px] text-amber-100 mt-0.5">Đĩa ra buffet</div>
+              <div className="text-[11px] text-amber-100 mt-0.5">Trừ Kho Sau Chế Biến</div>
             </div>
           </button>
 
@@ -1320,24 +1478,57 @@ export const KitchenModule: React.FC = () => {
           </button>
         </div>
 
-        {/* XỬ LÝ MÓN TƯƠI CHỈ DÙNG TRONG NGÀY CUỐI CA */}
-        <div className="bg-gradient-to-r from-teal-700 via-emerald-700 to-teal-800 rounded-2xl p-3 text-white shadow-sm flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="p-2 rounded-xl bg-white/20 backdrop-blur-sm flex-shrink-0">
-              <Salad className="h-5 w-5 text-emerald-200" />
+        {/* NÚT 5: ĐỒ ĂN THỪA CUỐI CA (Màu Tím / Indigo - Full width) */}
+        <button
+          onClick={() => {
+            setLeftoverQty('');
+            setLeftoverNote('');
+            setLeftoverPhoto(null);
+            setActiveModal('leftoverWaste');
+          }}
+          className="btn-touch w-full min-h-[68px] rounded-2xl bg-gradient-to-r from-purple-700 via-indigo-700 to-violet-800 hover:from-purple-800 hover:to-violet-900 text-white p-3 flex items-center justify-between shadow-md shadow-indigo-600/20 active:scale-[0.98] transition-all text-left cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2 rounded-xl bg-white/20 backdrop-blur-sm shrink-0">
+              <Trash2 className="h-5 w-5 text-purple-200" />
             </div>
             <div className="min-w-0">
-              <div className="font-extrabold text-xs leading-tight truncate">
+              <div className="flex items-center gap-1.5">
+                <span className="font-black text-xs sm:text-sm tracking-tight uppercase truncate">
+                  ĐỒ ĂN THỪA CUỐI CA
+                </span>
+                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-purple-200 text-purple-900 uppercase shrink-0">
+                  Nút 5
+                </span>
+              </div>
+              <p className="text-[11px] text-purple-200 truncate mt-0.5">
+                Thừa trên line / bếp • Bắt buộc ảnh chụp bàn cân
+              </p>
+            </div>
+          </div>
+          <div className="p-1 rounded-lg bg-white/10 shrink-0">
+            <ArrowRight className="h-4 w-4 text-white" />
+          </div>
+        </button>
+
+        {/* XỬ LÝ MÓN TƯƠI CHỈ DÙNG TRONG NGÀY CUỐI CA */}
+        <div className="bg-gradient-to-r from-teal-700 via-emerald-700 to-teal-800 rounded-2xl p-2.5 text-white shadow-sm flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-1.5 rounded-xl bg-white/20 backdrop-blur-sm flex-shrink-0">
+              <Salad className="h-4 w-4 text-emerald-200" />
+            </div>
+            <div className="min-w-0">
+              <div className="font-extrabold text-[11px] leading-tight truncate">
                 MÓN DÙNG TRONG NGÀY
               </div>
               <p className="text-[10px] text-emerald-100/90 truncate">
-                Kiểm đếm tồn salad, kim chi cuối ca
+                Kiểm đếm salad, kim chi cuối ca
               </p>
             </div>
           </div>
           <button
             onClick={handleOpenDailyWasteModal}
-            className="btn-touch px-2.5 py-1.5 rounded-xl bg-white text-emerald-900 font-extrabold text-[11px] hover:bg-emerald-50 flex items-center gap-1 shadow-xs active:scale-95 transition-all flex-shrink-0 cursor-pointer"
+            className="btn-touch px-2 py-1 rounded-xl bg-white text-emerald-900 font-extrabold text-[10px] hover:bg-emerald-50 flex items-center gap-1 shadow-xs active:scale-95 transition-all flex-shrink-0 cursor-pointer"
           >
             <span>XỬ LÝ</span>
           </button>
@@ -1405,11 +1596,11 @@ export const KitchenModule: React.FC = () => {
                 <h3 className="font-extrabold text-sm sm:text-base text-slate-900 flex items-center gap-2">
                   <span>Quầy Buffet Ra Line (+1 Đĩa)</span>
                   <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
-                    Đối Soát CukCuk POS
+                    Kho Sau Chế Biến & CukCuk
                   </span>
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Ghi nhận số đĩa ra line phục vụ khách, không trừ tồn kho vật lý.
+                  Khấu trừ tức thời tồn Kho Sau Chế Biến & đối soát bán lẻ CukCuk POS.
                 </p>
               </div>
             </div>
@@ -1462,23 +1653,32 @@ export const KitchenModule: React.FC = () => {
 
           {/* Grid các món ăn ra line (2 - 3 cột tuỳ chiều ngang) */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5 overflow-y-auto max-h-[calc(100vh-320px)] pr-1">
-            {filterItemsByStation(items, selectedStation)
-              .filter(
-                (it) =>
-                  it.itemName.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
-                  it.itemCode.toLowerCase().includes(lineSearchTerm.toLowerCase())
-              )
-              .map((item) => {
-                const isLoadingBtn = !!loadingLineButtons[item.id];
-                const isCooldown = !!cooldownButtons[item.id];
+            {(processedDishes.length > 0 ? processedDishes : (items as any[]))
+              .filter((it: any) => {
+                const name = it.dishName || it.itemName || '';
+                const code = it.dishCode || it.itemCode || '';
+                return (
+                  name.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
+                  code.toLowerCase().includes(lineSearchTerm.toLowerCase())
+                );
+              })
+              .map((item: any) => {
+                const isDish = 'dishCode' in item;
+                const itemId = item.id;
+                const isLoadingBtn = !!loadingLineButtons[itemId];
+                const isCooldown = !!cooldownButtons[itemId];
                 const isLocked = isLoadingBtn || isCooldown;
-                const countToday = lineCounters[item.id] || 0;
-                const isAnimating = animatingLineItemId === item.id;
-                const isShaking = shakingLineItemId === item.id;
+                const countToday = lineCounters[itemId] || 0;
+                const isAnimating = animatingLineItemId === itemId;
+                const isShaking = shakingLineItemId === itemId;
+                const currentStock = isDish ? (item.quantity ?? 0) : 10;
+                const isOutOfStock = currentStock <= 0;
+                const name = item.dishName || item.itemName;
+                const unit = item.unit || 'đĩa';
 
                 return (
                   <div
-                    key={item.id}
+                    key={itemId}
                     className={`relative p-3 rounded-xl bg-white border border-slate-200 shadow-xs flex items-center justify-between gap-2 overflow-hidden transition-all ${
                       isShaking ? 'ring-2 ring-amber-400 animate-haptic-shake' : 'hover:border-amber-300'
                     }`}
@@ -1486,14 +1686,25 @@ export const KitchenModule: React.FC = () => {
                     {isAnimating && (
                       <div className="absolute top-1 right-2 px-2.5 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[10px] shadow-lg animate-float-up flex items-center gap-1 z-20 pointer-events-none">
                         <Check className="h-3 w-3" />
-                        <span>+1 {item.unit}!</span>
+                        <span>+1 {unit}!</span>
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="font-bold text-xs sm:text-sm text-slate-900 truncate" title={item.itemName}>
-                        {item.itemName}
+                      <div className="font-bold text-xs sm:text-sm text-slate-900 truncate" title={name}>
+                        {name}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
+                      <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-semibold text-slate-600">Kho sau:</span>
+                        <span
+                          className={`font-mono font-black ${
+                            isOutOfStock
+                              ? 'text-rose-600 bg-rose-50 px-1 py-0.2 rounded border border-rose-200'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {currentStock} {unit}
+                        </span>
+                        <span className="text-slate-300">•</span>
                         <span>Đã ra:</span>
                         <span
                           className={`font-mono font-black ${
@@ -1502,15 +1713,23 @@ export const KitchenModule: React.FC = () => {
                         >
                           {countToday}
                         </span>
-                        <span>{item.unit}</span>
+                        <span>{unit}</span>
                       </div>
+                      {isOutOfStock && (
+                        <div className="text-[10px] font-bold text-rose-700 mt-0.5 flex items-center gap-0.5">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span>Hết kho sau chế biến (Cần Nút 2)</span>
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
                       onClick={() => handleLineItemInc(item)}
-                      disabled={isLocked}
+                      disabled={isLocked || isOutOfStock}
                       className={`px-3 py-2 rounded-xl text-white font-black text-xs flex items-center gap-1 shadow-sm active:scale-95 transition-all shrink-0 ${
-                        isLocked
+                        isOutOfStock
+                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                          : isLocked
                           ? 'bg-amber-300 cursor-not-allowed opacity-80'
                           : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 shadow-amber-500/20 cursor-pointer'
                       }`}
@@ -1750,11 +1969,21 @@ export const KitchenModule: React.FC = () => {
       </div>
 
       {/* ============================================================== */}
-      {/* MODAL 1: LẤY HÀNG RA BẾP                                      */}
+      {/* MODAL 1: LẤY HÀNG RA BẾP (KHO TRƯỚC CHẾ BIẾN)                  */}
       {/* ============================================================== */}
       {activeModal === 'takeOut' && (() => {
-        const selectedTakeOutItem = items.find((i) => i.id === Number(selectedItemId));
+        const filteredTakeOutItems = items.filter((it) => {
+          if (selectedPreCategory === 'ALL') return true;
+          return (
+            getItemPreProcessingCategory(it.category, undefined, it.itemName, it.itemCode) ===
+            selectedPreCategory
+          );
+        });
+
+        const selectedTakeOutItem =
+          items.find((i) => i.id === Number(selectedItemId)) || filteredTakeOutItems[0];
         const currentTakeOutQty = typeof takeOutQty === 'string' ? parseFloat(takeOutQty) : takeOutQty;
+        const currentUnit = takeOutUnit || selectedTakeOutItem?.unit || 'kg';
         const isTakeOutOverStock = Boolean(
           availableStock !== null &&
           typeof currentTakeOutQty === 'number' &&
@@ -1765,30 +1994,89 @@ export const KitchenModule: React.FC = () => {
 
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
-            <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="bg-white w-full max-w-xl rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
               <div className="flex items-center justify-between pb-4 border-b border-slate-100">
                 <div className="flex items-center gap-2 text-blue-600 font-bold text-base">
                   <Package className="h-6 w-6" />
-                  <span>NÚT 1: LẤY HÀNG RA BẾP</span>
+                  <span>NÚT 1: LẤY HÀNG (KHO TRƯỚC CHẾ BIẾN)</span>
                 </div>
                 <button onClick={() => setActiveModal(null)} className="p-2 text-slate-400 hover:text-slate-600 cursor-pointer">
                   <X className="h-5 w-5" />
                 </button>
               </div>
 
-              <form onSubmit={handleTakeOutSubmit} className="space-y-4 mt-4">
+              {/* Callout quy chuẩn Kho Trước Chế Biến */}
+              <div className="mt-3 p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-950 text-xs flex items-start gap-2">
+                <Info className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Quy chuẩn Kho Trước Chế Biến (TASK-FLOW-02):</strong> Chỉ xuất các nguyên liệu thô thuộc 11 nhóm danh mục mang ra bếp sơ chế/chế biến. Số lượng xuất sẽ trừ trực tiếp tồn kho trước chế biến.
+                </span>
+              </div>
+
+              <form onSubmit={handleTakeOutSubmit} className="space-y-4 mt-3">
+                {/* 11 Nhóm Danh Mục Kho Trước Chế Biến Filter */}
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">MÓN ĂN / NGUYÊN LIỆU</label>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase">
+                    NHÓM KHO TRƯỚC CHẾ BIẾN (11 NHÓM)
+                  </label>
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 no-scrollbar">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPreCategory('ALL');
+                      }}
+                      className={`btn-touch px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all ${
+                        selectedPreCategory === 'ALL'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      Tất cả 11 nhóm
+                    </button>
+                    {PRE_PROCESSING_CATEGORIES.map((cat) => (
+                      <button
+                        key={cat.code}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPreCategory(cat.code);
+                          const matching = items.filter(
+                            (it) =>
+                              getItemPreProcessingCategory(it.category, undefined, it.itemName, it.itemCode) ===
+                              cat.code
+                          );
+                          if (matching.length > 0) {
+                            setSelectedItemId(matching[0].id);
+                            setTakeOutUnit(matching[0].unit || 'kg');
+                            fetchAvailableStock(matching[0].id);
+                          }
+                        }}
+                        className={`btn-touch px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1 ${
+                          selectedPreCategory === cat.code
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        <span>{cat.icon}</span>
+                        <span>{cat.name.split(' (')[0]}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1">MÓN ĂN / NGUYÊN LIỆU THÔ</label>
                   <select
                     value={selectedItemId}
                     onChange={(e) => {
                       const newId = Number(e.target.value);
                       setSelectedItemId(newId);
+                      const sel = items.find((i) => i.id === newId);
+                      if (sel?.unit) setTakeOutUnit(sel.unit);
                       fetchAvailableStock(newId);
                     }}
-                    className="w-full h-12 px-3 rounded-xl border border-slate-300 font-medium text-slate-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    className="w-full h-12 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
-                    {items.map((i) => (
+                    {filteredTakeOutItems.map((i) => (
                       <option key={i.id} value={i.id}>
                         {i.itemName} ({i.unit}) - [{i.barcode || i.itemCode}]
                       </option>
@@ -1796,7 +2084,7 @@ export const KitchenModule: React.FC = () => {
                   </select>
 
                   {/* TASK-LOGIC-01: Nhãn trực quan tồn kho khả dụng hiện tại */}
-                  <div className="mt-2.5 px-3.5 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 flex items-center justify-between">
+                  <div className="mt-2 px-3.5 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 flex items-center justify-between">
                     <div className="flex items-center gap-1.5 text-xs text-blue-900 font-semibold">
                       <Package className="h-4 w-4 text-blue-600 shrink-0" />
                       <span>Tồn kho khả dụng hiện tại:</span>
@@ -1823,11 +2111,12 @@ export const KitchenModule: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Số lượng lấy & Đơn vị tính đa dạng (kg, cái, lít, con, gói) */}
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="block text-xs font-bold text-slate-600">SỐ LƯỢNG LẤY</label>
-                    <span className="text-xs font-semibold text-blue-600">
-                      Đơn vị: {selectedTakeOutItem?.unit || 'KG'}
+                    <span className="text-xs font-bold text-blue-700">
+                      Đơn vị: {currentUnit.toUpperCase()}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1870,12 +2159,31 @@ export const KitchenModule: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Lựa chọn ĐVT đa dạng: kg, cái, lít, con, gói */}
+                  <div className="flex items-center gap-1.5 mt-2">
+                    <span className="text-xs font-bold text-slate-500 mr-1">ĐVT:</span>
+                    {['kg', 'cái', 'lít', 'con', 'gói'].map((u) => (
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => setTakeOutUnit(u)}
+                        className={`btn-touch px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                          currentUnit === u
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {u}
+                      </button>
+                    ))}
+                  </div>
+
                   {/* Cảnh báo đỏ khi vượt tồn kho khả dụng */}
                   {isTakeOutOverStock && (
                     <div className="mt-2 p-2.5 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-2 text-xs font-bold text-rose-700 animate-in fade-in">
                       <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
                       <span>
-                        ⚠️ Số lượng yêu cầu ({currentTakeOutQty} {selectedTakeOutItem?.unit || 'kg'}) vượt quá tồn kho khả dụng ({availableStock?.toFixed(2)} {selectedTakeOutItem?.unit || 'kg'}). Vui lòng kiểm tra lại!
+                        ⚠️ Số lượng yêu cầu ({currentTakeOutQty} {currentUnit}) vượt quá tồn kho khả dụng ({availableStock?.toFixed(2)} {selectedTakeOutItem?.unit || 'kg'}). Vui lòng kiểm tra lại!
                       </span>
                     </div>
                   )}
@@ -1903,7 +2211,7 @@ export const KitchenModule: React.FC = () => {
                     ) : (
                       <>
                         <CheckCircle2 className="h-5 w-5" />
-                        <span>XÁC NHẬN LẤY HÀNG</span>
+                        <span>XÁC NHẬN LẤY HÀNG (TRỪ KHO TRƯỚC)</span>
                       </>
                     )}
                   </button>
@@ -2428,11 +2736,11 @@ export const KitchenModule: React.FC = () => {
               </div>
             </div>
 
-            {/* Task 8.4 Business Rule Callout */}
+            {/* TASK-FLOW-04 Business Rule Callout */}
             <div className="mt-3 p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex items-start gap-2">
               <Info className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <span>
-                <strong>Khẳng định nghiệp vụ:</strong> Nút Ra Line chỉ ghi nhận số lượt khay/đĩa đưa ra quầy buffet để đối soát với CukCuk POS, <strong>TUYỆT ĐỐI KHÔNG TRỪ TỒN KHO</strong>.
+                <strong>Khẳng định nghiệp vụ (TASK-FLOW-04):</strong> Món ra line lấy từ <strong>KHO SAU CHẾ BIẾN</strong>. Mỗi lần bấm <strong>+1 ĐĨA</strong>, hệ thống khấu trừ trực tiếp tồn kho món ăn hoàn chỉnh. Nếu kho hết hàng, hệ thống cảnh báo yêu cầu làm mẻ mới tại <strong>Nút 2</strong>.
               </span>
             </div>
 
@@ -2479,23 +2787,33 @@ export const KitchenModule: React.FC = () => {
             </p>
 
             <div className="space-y-3 mt-4">
-              {filterItemsByStation(items, selectedStation)
-                .filter(
-                  (it) =>
-                    it.itemName.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
-                    it.itemCode.toLowerCase().includes(lineSearchTerm.toLowerCase())
-                )
-                .map((item) => {
-                  const isLoadingBtn = !!loadingLineButtons[item.id];
-                  const isCooldown = !!cooldownButtons[item.id];
+              {(processedDishes.length > 0 ? processedDishes : (items as any[]))
+                .filter((it: any) => {
+                  const name = it.dishName || it.itemName || '';
+                  const code = it.dishCode || it.itemCode || '';
+                  return (
+                    name.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
+                    code.toLowerCase().includes(lineSearchTerm.toLowerCase())
+                  );
+                })
+                .map((item: any) => {
+                  const isDish = 'dishCode' in item;
+                  const itemId = item.id;
+                  const isLoadingBtn = !!loadingLineButtons[itemId];
+                  const isCooldown = !!cooldownButtons[itemId];
                   const isLocked = isLoadingBtn || isCooldown;
-                  const countToday = lineCounters[item.id] || 0;
-                  const isAnimating = animatingLineItemId === item.id;
-                  const isShaking = shakingLineItemId === item.id;
+                  const countToday = lineCounters[itemId] || 0;
+                  const isAnimating = animatingLineItemId === itemId;
+                  const isShaking = shakingLineItemId === itemId;
+                  const currentStock = isDish ? (item.quantity ?? 0) : 10;
+                  const isOutOfStock = currentStock <= 0;
+                  const name = item.dishName || item.itemName;
+                  const unit = item.unit || 'đĩa';
+                  const category = item.category || 'Món Nóng';
 
                   return (
                     <div
-                      key={item.id}
+                      key={itemId}
                       className={`relative p-3.5 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-between gap-3 overflow-hidden transition-all ${
                         isShaking ? 'ring-2 ring-amber-400 animate-haptic-shake' : ''
                       }`}
@@ -2504,14 +2822,25 @@ export const KitchenModule: React.FC = () => {
                       {isAnimating && (
                         <div className="absolute top-2 right-4 px-3 py-1 rounded-full bg-emerald-600 text-white font-black text-xs shadow-xl animate-float-up flex items-center gap-1 z-20 pointer-events-none">
                           <Check className="h-3.5 w-3.5" />
-                          <span>+1 {item.unit}!</span>
+                          <span>+1 {unit}!</span>
                         </div>
                       )}
 
-                      <div>
-                        <div className="font-bold text-sm sm:text-base text-slate-900">{item.itemName}</div>
-                        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
-                          <span>Đã ra hôm nay:</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-sm sm:text-base text-slate-900 truncate">{name}</div>
+                        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[11px] font-semibold text-slate-600">Tồn kho sau chế biến:</span>
+                          <span
+                            className={`font-mono font-black ${
+                              isOutOfStock
+                                ? 'text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            {currentStock} {unit}
+                          </span>
+                          <span className="text-slate-300">•</span>
+                          <span>Đã ra line:</span>
                           <span
                             className={`font-mono font-black transition-all ${
                               isAnimating ? 'text-emerald-600 scale-125' : 'text-amber-700'
@@ -2519,18 +2848,26 @@ export const KitchenModule: React.FC = () => {
                           >
                             {countToday}
                           </span>
-                          <span>{item.unit}</span>
+                          <span>{unit}</span>
                           <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded ml-1 font-semibold">
-                            {item.category}
+                            {category}
                           </span>
                         </div>
+                        {isOutOfStock && (
+                          <div className="text-[10px] font-bold text-rose-700 mt-1 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            <span>Hết món trong kho sau chế biến! Cần làm mẻ tại Nút 2.</span>
+                          </div>
+                        )}
                       </div>
 
                       <button
                         onClick={() => handleLineItemInc(item)}
-                        disabled={isLocked}
+                        disabled={isLocked || isOutOfStock}
                         className={`btn-touch px-4 h-12 rounded-xl text-white font-extrabold text-sm flex items-center gap-1.5 shadow-md active:scale-95 transition-all flex-shrink-0 ${
-                          isLocked
+                          isOutOfStock
+                            ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                            : isLocked
                             ? 'bg-amber-300 cursor-not-allowed opacity-80'
                             : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 shadow-amber-500/20'
                         }`}
@@ -2545,10 +2882,12 @@ export const KitchenModule: React.FC = () => {
                             <Clock className="h-4 w-4 animate-pulse" />
                             <span>CHỜ 1.5s</span>
                           </>
+                        ) : isOutOfStock ? (
+                          <span>HẾT KHO</span>
                         ) : (
                           <>
                             <PlusCircle className="h-5 w-5" />
-                            <span>+1 {item.unit}</span>
+                            <span>+1 {unit}</span>
                           </>
                         )}
                       </button>
@@ -2821,6 +3160,276 @@ export const KitchenModule: React.FC = () => {
                     💡 <strong>Quy trình xử lý:</strong> Đơn báo hỏng được gửi tức thời đến Bếp trưởng & Quản lý cơ sở để duyệt trừ công nợ NCC hoặc ghi nhận hao hụt ca.
                   </div>
                 </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 5: TẠO ĐỒ ĂN THỪA CUỐI CA (BẮT BUỘC ẢNH CHỤP ĐÍNH KÈM)    */}
+      {/* ============================================================== */}
+      {activeModal === 'leftoverWaste' && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
+          <div className="bg-white w-full max-w-xl rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-purple-700 font-black text-base">
+                <Trash2 className="h-6 w-6 text-purple-600" />
+                <span>NÚT 5: TẠO ĐỒ ĂN THỪA CUỐI CA</span>
+              </div>
+              <button
+                onClick={() => setActiveModal(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleLeftoverWasteSubmit} className="space-y-4 mt-4">
+              {/* Business Rule Callout */}
+              <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-950 text-xs leading-relaxed space-y-1">
+                <p className="font-bold text-purple-800 flex items-center gap-1.5">
+                  <ShieldCheck className="h-4 w-4 text-purple-600 flex-shrink-0" />
+                  <span>Quy Chuẩn Chống Thất Thoát & Kiểm Soát Cuối Ca (TASK-FLOW-05):</span>
+                </p>
+                <p className="text-purple-900/90 text-xs">
+                  Ghi nhận số lượng thức ăn dư thừa trên line buffet hoặc trong bếp cuối ca để hạch toán vào <strong>"Hỏng/bỏ có báo"</strong> của Bảng đối soát cuối ngày.
+                  <strong> BẮT BUỘC chụp ảnh mặt bàn cân / khay thức ăn thừa</strong> để chống thất thoát.
+                </p>
+              </div>
+
+              {/* Phân loại vị trí thức ăn thừa */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase">
+                  VỊ TRÍ THỨC ĂN THỪA
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLeftoverLocation('LINE')}
+                    className={`btn-touch py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      leftoverLocation === 'LINE'
+                        ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Utensils className="h-4 w-4" />
+                    <span>Trên Line Buffet</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeftoverLocation('BEP')}
+                    className={`btn-touch py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      leftoverLocation === 'BEP'
+                        ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Flame className="h-4 w-4" />
+                    <span>Trong Kho Bếp</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Chọn món ăn thừa */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                  MÓN ĂN DƯ THỪA
+                </label>
+                <select
+                  value={leftoverDishId}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setLeftoverDishId(id);
+                    const d = processedDishes.find((dish) => dish.id === id);
+                    if (d) {
+                      setLeftoverItemName(d.dishName);
+                      setLeftoverUnit(d.unit || 'đĩa');
+                    }
+                  }}
+                  className="w-full h-12 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 text-sm focus:ring-2 focus:ring-purple-500"
+                >
+                  {processedDishes.map((dish) => (
+                    <option key={dish.id} value={dish.id}>
+                      {dish.dishName} ({dish.unit}) - [Kho Sau: {dish.quantity} {dish.unit}]
+                    </option>
+                  ))}
+                  {items.map((i) => (
+                    <option key={`item-${i.id}`} value={i.id}>
+                      {i.itemName} ({i.unit}) - [Nguyên liệu]
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Số lượng thừa & Đơn vị tính */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                    SỐ LƯỢNG THỪA
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0.1"
+                    placeholder="Nhập số lượng..."
+                    value={leftoverQty}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(',', '.');
+                      setLeftoverQty(val === '' ? '' : parseFloat(val) || 0);
+                    }}
+                    className="w-full h-12 px-3 rounded-xl border border-slate-300 font-black text-lg text-slate-900 focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                    ĐƠN VỊ TÍNH
+                  </label>
+                  <select
+                    value={leftoverUnit}
+                    onChange={(e) => setLeftoverUnit(e.target.value)}
+                    className="w-full h-12 px-2.5 rounded-xl border border-slate-300 font-bold text-slate-800 text-sm focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="đĩa">Đĩa</option>
+                    <option value="kg">kg</option>
+                    <option value="khay">Khay</option>
+                    <option value="bát">Bát</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Lý do thức ăn thừa */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                  LÝ DO DƯ THỪA
+                </label>
+                <select
+                  value={leftoverReason}
+                  onChange={(e) => setLeftoverReason(e.target.value)}
+                  className="w-full h-11 px-3 rounded-xl border border-slate-300 text-slate-800 font-semibold text-xs sm:text-sm focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="Khách dùng không hết">Khách dùng không hết (thừa trên quầy buffet)</option>
+                  <option value="Quá thời gian trưng bày theo chuẩn ATTP">Quá thời gian trưng bày theo chuẩn ATTP</option>
+                  <option value="Sơ chế / Nấu dư thừa trong ca">Sơ chế / Nấu dư thừa trong ca</option>
+                  <option value="Món ăn bị nguội hoặc hỏng chất lượng">Món ăn bị nguội hoặc hỏng chất lượng</option>
+                  <option value="Khác">Lý do khác...</option>
+                </select>
+              </div>
+
+              {/* Ghi chú */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                  GHI CHÚ THÊM (TÙY CHỌN)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ghi chú thêm về món ăn thừa..."
+                  value={leftoverNote}
+                  onChange={(e) => setLeftoverNote(e.target.value)}
+                  className="w-full h-11 px-3 rounded-xl border border-slate-300 text-xs sm:text-sm focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+
+              {/* KHU VỰC BẮT BUỘC CHỤP ẢNH BÀN CÂN / THỨC ĂN THỪA */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-black text-rose-700 uppercase flex items-center gap-1">
+                    <Camera className="h-4 w-4 text-rose-600" />
+                    <span>ẢNH CHỤP MẶT BÀN CÂN / THỨC ĂN THỪA (BẮT BUỘC)</span>
+                  </label>
+                  {leftoverPhoto && (
+                    <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                      ✓ Đã nén: {Math.round(leftoverPhoto.compressedSizeKb)}KB
+                    </span>
+                  )}
+                </div>
+
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  ref={leftoverPhotoInputRef}
+                  onChange={handleLeftoverPhotoUpload}
+                  className="hidden"
+                />
+
+                {!leftoverPhoto ? (
+                  <div
+                    onClick={() => leftoverPhotoInputRef.current?.click()}
+                    className="p-6 rounded-2xl border-2 border-dashed border-rose-300 bg-rose-50/60 hover:bg-rose-50 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
+                  >
+                    {isCompressingLeftoverPhoto ? (
+                      <div className="flex flex-col items-center gap-2 py-2">
+                        <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+                        <span className="text-xs font-bold text-purple-800">Đang nén ảnh Canvas API & chèn Watermark...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="p-3 rounded-full bg-rose-100 text-rose-600 shadow-xs">
+                          <Camera className="h-7 w-7" />
+                        </div>
+                        <div className="text-center">
+                          <p className="font-black text-rose-800 text-xs sm:text-sm">
+                            BẤM ĐỂ CHỤP ẢNH BÀN CÂN / KHAY THỨC ĂN THỪA
+                          </p>
+                          <p className="text-[11px] text-rose-600 mt-0.5">
+                            Camera điện thoại / máy tính bảng • Tự động nén &lt; 200KB kèm Watermark
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="relative rounded-2xl overflow-hidden border border-purple-200 bg-purple-50/40 p-2 flex items-center gap-3">
+                    <img
+                      src={leftoverPhoto.dataUrl}
+                      alt="Ảnh thức ăn thừa"
+                      className="w-24 h-24 object-cover rounded-xl border border-slate-200 shadow-xs"
+                    />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="text-xs font-bold text-purple-900 flex items-center gap-1">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                        <span>Đã có ảnh minh chứng hợp lệ</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        Độ phân giải: {leftoverPhoto.width}x{leftoverPhoto.height}px
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => leftoverPhotoInputRef.current?.click()}
+                        className="text-xs font-bold text-purple-700 hover:text-purple-900 underline flex items-center gap-1 pt-1 cursor-pointer"
+                      >
+                        <RotateCw className="h-3.5 w-3.5" />
+                        <span>Chụp lại ảnh khác</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {!leftoverPhoto && (
+                  <div className="p-2 rounded-xl bg-amber-50 border border-amber-200 flex items-center gap-2 text-xs font-semibold text-amber-900">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                    <span>Hệ thống sẽ khóa nút xác nhận nếu chưa có ảnh chụp đính kèm.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Nút xác nhận lưu */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={isSubmittingLeftover || !leftoverPhoto || !leftoverQty || Number(leftoverQty) <= 0}
+                  className="btn-touch w-full h-14 rounded-xl bg-purple-700 hover:bg-purple-800 disabled:bg-slate-300 disabled:cursor-not-allowed disabled:text-slate-500 disabled:shadow-none text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
+                >
+                  {isSubmittingLeftover ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-5 w-5" />
+                      <span>XÁC NHẬN GHI NHẬN ĐỒ ĂN THỪA</span>
+                    </>
+                  )}
+                </button>
               </div>
             </form>
           </div>

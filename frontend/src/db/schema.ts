@@ -44,6 +44,28 @@ export interface Batch {
   approvedAt?: string;
 }
 
+/**
+ * Thực Thể Món Ăn Trong KHO SAU CHẾ BIẾN (Processed Dishes / Finished Dishes)
+ * Lưu trữ các món ăn hoàn chỉnh sẵn sàng phục vụ line buffet theo chi nhánh
+ */
+export interface ProcessedDish {
+  id: number;
+  dishCode: string;
+  dishName: string;
+  category: string; // 'Món Nóng' | 'Món Nướng' | 'Món Hấp' | 'Món Lạnh' | 'Tráng Miệng'
+  rawItemId?: number;
+  rawItemCode?: string;
+  rawItemName?: string;
+  branchId: number;
+  branchCode?: string;
+  quantity: number; // Tồn đĩa/kg khả dụng trong kho sau chế biến
+  unit: string; // 'đĩa' | 'kg' | 'phần' | 'khay'
+  standardPortionWeight?: number; // Khối lượng chuẩn (kg/đĩa)
+  costPrice?: number;
+  status: 'AVAILABLE' | 'OUT_OF_STOCK' | string;
+  lastUpdatedAt?: string;
+}
+
 export class SenVietDemoDatabase extends Dexie {
   users!: Table<any, number>;
   branches!: Table<any, number>;
@@ -72,6 +94,7 @@ export class SenVietDemoDatabase extends Dexie {
   dailyMeals!: Table<any, number>;
   debtAdjustments!: Table<any, number>;
   reconciliationPeriods!: Table<any, number>;
+  processedDishes!: Table<ProcessedDish, number>;
 
   constructor() {
     super('SenVietBuffetDemoDB');
@@ -103,6 +126,7 @@ export class SenVietDemoDatabase extends Dexie {
       dailyMeals: '++id, branchId, branchCode, date, day',
       debtAdjustments: '++id, supplierId, branchCode, periodId, status, createdAt',
       reconciliationPeriods: '++id, supplierId, branchCode, status, periodStartDate, periodEndDate',
+      processedDishes: '++id, dishCode, dishName, category, branchId, rawItemId, status',
     });
   }
 }
