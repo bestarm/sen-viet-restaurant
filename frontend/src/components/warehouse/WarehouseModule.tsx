@@ -70,12 +70,15 @@ import { HDImageModal } from './HDImageModal';
 import { DeliveryVoucherModal } from './DeliveryVoucherModal';
 import { StockCardsTab } from './StockCardsTab';
 import { SupplierDebtReconciliationTab } from './SupplierDebtReconciliationTab';
+import { ProcessedDishesTab } from './ProcessedDishesTab';
 
 export type WarehouseTab =
   | 'stock-overview'
   | 'documents'
   | 'inventory-check'
   | 'supplier-partner';
+
+export type StockSubTab = 'pre-processing' | 'post-processing' | 'batches';
 
 export const WAREHOUSE_COCKPIT_TABS: WarehouseTab[] = [
   'stock-overview',
@@ -111,7 +114,7 @@ export const WarehouseModule: React.FC = () => {
 
   // Active top tab - 4 nhóm Cockpit chuẩn hóa
   const [activeTab, setActiveTab] = useState<WarehouseTab>('stock-overview');
-  const [stockSubTab, setStockSubTab] = useState<'cards' | 'batches'>('cards');
+  const [stockSubTab, setStockSubTab] = useState<StockSubTab>('pre-processing');
   const [supplierSubTab, setSupplierSubTab] = useState<'recon' | 'loss-report' | 'suppliers'>(
     isKitchenPure ? 'loss-report' : 'recon'
   );
@@ -1287,7 +1290,7 @@ export const WarehouseModule: React.FC = () => {
               }`}
             >
               <Scale className={`h-4 w-4 ${isKitchenPure ? 'h-5 w-5 text-emerald-950' : 'text-slate-950'}`} />
-              <span>⚖️ CÂN HÀNG MỚI VỀ</span>
+              <span>⚖️ CÂN HÀNG MỚI VỀ (Nhập Kho Trước Chế Biến)</span>
             </button>
 
             <button
@@ -1320,7 +1323,7 @@ export const WarehouseModule: React.FC = () => {
             }`}
           >
             <Boxes className="h-4 w-4" />
-            <span>1. Tồn Kho & Thẻ Kho Vật Lý</span>
+            <span>1. Kho 2 Tầng: Trước & Sau Chế Biến</span>
             {alertBatchCount > 0 && (
               <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-400 text-slate-950 font-black">
                 {alertBatchCount}
@@ -1382,7 +1385,7 @@ export const WarehouseModule: React.FC = () => {
         <div
           onClick={() => {
             setActiveTab('stock-overview');
-            setStockSubTab('cards');
+            setStockSubTab('pre-processing');
           }}
           className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all cursor-pointer relative overflow-hidden group"
         >
@@ -1564,24 +1567,36 @@ export const WarehouseModule: React.FC = () => {
       )}
 
       {/* =================================================================== */}
-      {/* TAB 1: 📦 TỒN KHO & THẺ KHO VẬT LÝ (STOCK OVERVIEW COCKPIT)         */}
+      {/* TAB 1: 📦 KHO 2 TẦNG: TRƯỚC & SAU CHẾ BIẾN (STOCK OVERVIEW COCKPIT) */}
       {/* =================================================================== */}
       {activeTab === 'stock-overview' && (
         <div className="space-y-4">
           {/* Sub-tab navigation bar */}
           <div className="flex items-center justify-between flex-wrap gap-3 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <button
                 type="button"
-                onClick={() => setStockSubTab('cards')}
+                onClick={() => setStockSubTab('pre-processing')}
                 className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
-                  stockSubTab === 'cards'
+                  stockSubTab === 'pre-processing'
                     ? 'bg-slate-900 text-white shadow-sm'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 <Package className="h-3.5 w-3.5" />
-                <span>Thẻ Kho & 5 Phân Vùng Vật Lý</span>
+                <span>🌱 1. Kho Trước Chế Biến (217 Nguyên Liệu Thô • 11 Nhóm)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setStockSubTab('post-processing')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                  stockSubTab === 'post-processing'
+                    ? 'bg-slate-900 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                <span className="text-sm">🍲</span>
+                <span>2. Kho Sau Chế Biến (Món Ăn Hoàn Thành • Hàu Nướng, Cua Me...)</span>
               </button>
               <button
                 type="button"
@@ -1593,7 +1608,7 @@ export const WarehouseModule: React.FC = () => {
                 }`}
               >
                 <Tag className="h-3.5 w-3.5" />
-                <span>Quản Lý Lô Hàng & Hạn Dùng FEFO ({batches.length})</span>
+                <span>🏷️ 3. Quản Lý Lô Hàng & Hạn Dùng FEFO ({batches.length})</span>
                 {alertBatchCount > 0 && (
                   <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-400 text-slate-950 font-black">
                     {alertBatchCount}
@@ -1609,7 +1624,7 @@ export const WarehouseModule: React.FC = () => {
             )}
           </div>
 
-          {stockSubTab === 'cards' ? (
+          {stockSubTab === 'pre-processing' && (
             <StockCardsTab
               stocks={stocks}
               batches={batches}
@@ -1618,7 +1633,17 @@ export const WarehouseModule: React.FC = () => {
               onOpenDocModal={handleOpenDocModal}
               hideFinancials={hideFinancials}
             />
-          ) : (
+          )}
+
+          {stockSubTab === 'post-processing' && (
+            <ProcessedDishesTab
+              branchId={user?.branchId ?? undefined}
+              branchCode={user?.branchId === 2 ? 'QV' : 'TN'}
+              isKitchen={isKitchenPure}
+            />
+          )}
+
+          {stockSubTab === 'batches' && (
             <div className="space-y-4">
               {/* Thanh công cụ Tìm kiếm & Lọc NCC & Lọc Tồn kho */}
               <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
