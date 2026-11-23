@@ -73,6 +73,9 @@ import { SupplierDebtReconciliationTab } from './SupplierDebtReconciliationTab';
 import { ProcessedDishesTab } from './ProcessedDishesTab';
 
 export type WarehouseTab =
+  | 'kho-truoc'
+  | 'kho-sau'
+  | 'batches-fefo'
   | 'stock-overview'
   | 'documents'
   | 'inventory-check'
@@ -112,8 +115,8 @@ export const WarehouseModule: React.FC = () => {
   const isKitchenStaff = isKitchen;
   const hideFinancials = isHeadChef || isKitchenStaff || (!isChuChuoi && !isGenAcc && !isBrAcc && !isBranchMgr);
 
-  // Active top tab - 4 nhóm Cockpit chuẩn hóa
-  const [activeTab, setActiveTab] = useState<WarehouseTab>('stock-overview');
+  // Active top tab - 6 nút Cockpit chuẩn hóa
+  const [activeTab, setActiveTab] = useState<WarehouseTab>('kho-truoc');
   const [stockSubTab, setStockSubTab] = useState<StockSubTab>('pre-processing');
   const [supplierSubTab, setSupplierSubTab] = useState<'recon' | 'loss-report' | 'suppliers'>(
     isKitchenPure ? 'loss-report' : 'recon'
@@ -1290,7 +1293,7 @@ export const WarehouseModule: React.FC = () => {
               }`}
             >
               <Scale className={`h-4 w-4 ${isKitchenPure ? 'h-5 w-5 text-emerald-950' : 'text-slate-950'}`} />
-              <span>⚖️ CÂN HÀNG MỚI VỀ (Nhập Kho Trước Chế Biến)</span>
+              <span>⚖️ CÂN HÀNG MỚI VỀ</span>
             </button>
 
             <button
@@ -1311,19 +1314,45 @@ export const WarehouseModule: React.FC = () => {
           </div>
         </div>
 
-        {/* TOP TAB NAVIGATION - 4 NHÓM NGHIỆP VỤ COCKPIT CHUẨN */}
+        {/* TOP TAB NAVIGATION - CÁC NHÓM NGHIỆP VỤ COCKPIT */}
         <div className="flex items-center gap-2 mt-6 border-t border-slate-800 pt-4 overflow-x-auto no-scrollbar">
-          {/* TAB 1: STOCK OVERVIEW */}
+          {/* BUTTON 1: KHO TRƯỚC CHẾ BIẾN */}
           <button
-            onClick={() => setActiveTab('stock-overview')}
+            onClick={() => setActiveTab('kho-truoc')}
             className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
-              activeTab === 'stock-overview'
+              activeTab === 'kho-truoc' || activeTab === 'stock-overview'
                 ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-300'
                 : 'text-slate-300 hover:text-white hover:bg-white/5'
             }`}
           >
-            <Boxes className="h-4 w-4" />
-            <span>1. Kho 2 Tầng: Trước & Sau Chế Biến</span>
+            <Package className="h-4 w-4" />
+            <span>🌱 KHO TRƯỚC CHẾ BIẾN (217 Mặt Hàng)</span>
+          </button>
+
+          {/* BUTTON 2: KHO SAU CHẾ BIẾN */}
+          <button
+            onClick={() => setActiveTab('kho-sau')}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
+              activeTab === 'kho-sau'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-300'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <span className="text-sm">🍲</span>
+            <span>🍲 KHO SAU CHẾ BIẾN (Món Ăn Hoàn Thành)</span>
+          </button>
+
+          {/* BUTTON 3: LÔ HÀNG FEFO */}
+          <button
+            onClick={() => setActiveTab('batches-fefo')}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
+              activeTab === 'batches-fefo'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/30 ring-2 ring-emerald-300'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Tag className="h-4 w-4" />
+            <span>🏷️ Lô Hàng FEFO</span>
             {alertBatchCount > 0 && (
               <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-400 text-slate-950 font-black">
                 {alertBatchCount}
@@ -1331,7 +1360,7 @@ export const WarehouseModule: React.FC = () => {
             )}
           </button>
 
-          {/* TAB 2: DOCUMENTS */}
+          {/* BUTTON 4: DOCUMENTS */}
           <button
             onClick={() => setActiveTab('documents')}
             className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
@@ -1349,7 +1378,7 @@ export const WarehouseModule: React.FC = () => {
             )}
           </button>
 
-          {/* TAB 3: INVENTORY CHECK */}
+          {/* BUTTON 5: INVENTORY CHECK */}
           <button
             onClick={() => setActiveTab('inventory-check')}
             className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
@@ -1362,7 +1391,7 @@ export const WarehouseModule: React.FC = () => {
             <span>3. Kiểm Kê Kho Định Kỳ ({checks.length})</span>
           </button>
 
-          {/* TAB 4: SUPPLIER PARTNER */}
+          {/* BUTTON 6: SUPPLIER PARTNER */}
           <button
             onClick={() => setActiveTab('supplier-partner')}
             className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all whitespace-nowrap ${
@@ -1372,7 +1401,7 @@ export const WarehouseModule: React.FC = () => {
             }`}
           >
             <Scale className="h-4 w-4" />
-            <span>4. Đối Soát & Nhà Cung Cấp ({suppliers.length} NCC)</span>
+            <span>4. Đối Soát & NCC ({suppliers.length} NCC)</span>
           </button>
         </div>
       </div>
@@ -1384,8 +1413,7 @@ export const WarehouseModule: React.FC = () => {
         {/* Card 1: Tổng Tồn Khả Dụng */}
         <div
           onClick={() => {
-            setActiveTab('stock-overview');
-            setStockSubTab('pre-processing');
+            setActiveTab('kho-truoc');
           }}
           className="bg-white p-4 sm:p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all cursor-pointer relative overflow-hidden group"
         >
@@ -1420,8 +1448,7 @@ export const WarehouseModule: React.FC = () => {
         {/* Card 2: Cảnh Báo Cận Hạn / Sắp Hết */}
         <div
           onClick={() => {
-            setActiveTab('stock-overview');
-            setStockSubTab('batches');
+            setActiveTab('batches-fefo');
             setBatchStockFilter('LOW');
           }}
           className={`bg-white p-4 sm:p-5 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer relative overflow-hidden group ${
@@ -1567,84 +1594,39 @@ export const WarehouseModule: React.FC = () => {
       )}
 
       {/* =================================================================== */}
-      {/* TAB 1: 📦 KHO 2 TẦNG: TRƯỚC & SAU CHẾ BIẾN (STOCK OVERVIEW COCKPIT) */}
+      {/* TAB 1: 🌱 KHO TRƯỚC CHẾ BIẾN (STOCK OVERVIEW / KHO TRƯỚC)          */}
       {/* =================================================================== */}
-      {activeTab === 'stock-overview' && (
+      {(activeTab === 'kho-truoc' || activeTab === 'stock-overview') && (
         <div className="space-y-4">
-          {/* Sub-tab navigation bar */}
-          <div className="flex items-center justify-between flex-wrap gap-3 bg-white p-2.5 rounded-2xl border border-slate-200 shadow-sm">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setStockSubTab('pre-processing')}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
-                  stockSubTab === 'pre-processing'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Package className="h-3.5 w-3.5" />
-                <span>🌱 1. Kho Trước Chế Biến (217 Nguyên Liệu Thô • 11 Nhóm)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockSubTab('post-processing')}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
-                  stockSubTab === 'post-processing'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <span className="text-sm">🍲</span>
-                <span>2. Kho Sau Chế Biến (Món Ăn Hoàn Thành • Hàu Nướng, Cua Me...)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setStockSubTab('batches')}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
-                  stockSubTab === 'batches'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Tag className="h-3.5 w-3.5" />
-                <span>🏷️ 3. Quản Lý Lô Hàng & Hạn Dùng FEFO ({batches.length})</span>
-                {alertBatchCount > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-400 text-slate-950 font-black">
-                    {alertBatchCount}
-                  </span>
-                )}
-              </button>
-            </div>
-            {isKitchenPure && (
-              <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-xl border border-emerald-200 flex items-center gap-1.5">
-                <Scale className="h-3.5 w-3.5 text-emerald-600" />
-                <span>Chế độ Bếp viên: Ẩn giá nhạy cảm • Ưu tiên số lượng tồn khả dụng (kg)</span>
-              </div>
-            )}
-          </div>
+          <StockCardsTab
+            stocks={stocks}
+            batches={batches}
+            buffetItems={buffetItems}
+            documents={documents}
+            onOpenDocModal={handleOpenDocModal}
+            hideFinancials={hideFinancials}
+          />
+        </div>
+      )}
 
-          {stockSubTab === 'pre-processing' && (
-            <StockCardsTab
-              stocks={stocks}
-              batches={batches}
-              buffetItems={buffetItems}
-              documents={documents}
-              onOpenDocModal={handleOpenDocModal}
-              hideFinancials={hideFinancials}
-            />
-          )}
+      {/* =================================================================== */}
+      {/* TAB 2: 🍲 KHO SAU CHẾ BIẾN (MÓN ĂN HOÀN THÀNH)                     */}
+      {/* =================================================================== */}
+      {activeTab === 'kho-sau' && (
+        <div className="space-y-4">
+          <ProcessedDishesTab
+            branchId={user?.branchId ?? undefined}
+            branchCode={user?.branchId === 2 ? 'QV' : 'TN'}
+            isKitchen={isKitchenPure}
+          />
+        </div>
+      )}
 
-          {stockSubTab === 'post-processing' && (
-            <ProcessedDishesTab
-              branchId={user?.branchId ?? undefined}
-              branchCode={user?.branchId === 2 ? 'QV' : 'TN'}
-              isKitchen={isKitchenPure}
-            />
-          )}
-
-          {stockSubTab === 'batches' && (
-            <div className="space-y-4">
+      {/* =================================================================== */}
+      {/* TAB 3: 🏷️ QUẢN LÝ LÔ HÀNG & HẠN DÙNG FEFO                         */}
+      {/* =================================================================== */}
+      {activeTab === 'batches-fefo' && (
+        <div className="space-y-4">
               {/* Thanh công cụ Tìm kiếm & Lọc NCC & Lọc Tồn kho */}
               <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3 flex-1">
@@ -1779,8 +1761,6 @@ export const WarehouseModule: React.FC = () => {
                   </table>
                 </div>
               </div>
-            </div>
-          )}
         </div>
       )}
 
