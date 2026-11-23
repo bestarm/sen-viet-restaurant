@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useAuth } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { NotificationProvider } from './context/NotificationContext';
 import { LoginPage } from './components/auth/LoginPage';
 import { AdaptiveShell } from './components/layout/AdaptiveShell';
 import { Dashboard } from './components/dashboard/Dashboard';
@@ -157,4 +158,12 @@ export const App: React.FC = () => {
   );
 };
 
-export default App;
+export default function ManagementApp() {
+  return (
+    <AuthProvider>
+      <NotificationProvider>
+        <App />
+      </NotificationProvider>
+    </AuthProvider>
+  );
+}
