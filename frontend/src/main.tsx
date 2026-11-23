@@ -1,16 +1,23 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
-import { AuthProvider } from './context/AuthContext';
-import { NotificationProvider } from './context/NotificationContext';
+import { RestaurantHome } from './components/restaurant/RestaurantHome';
 import './index.css';
+
+const ManagementApp = lazy(() => import('./App'));
+const isRestaurantHome = window.location.pathname === '/';
+
+if (!isRestaurantHome) {
+  document.title = 'Quản lý | Sen Việt Buffet';
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AuthProvider>
-      <NotificationProvider>
-        <App />
-      </NotificationProvider>
-    </AuthProvider>
+    {isRestaurantHome ? (
+      <RestaurantHome />
+    ) : (
+      <Suspense fallback={<p role="status" className="p-6 text-slate-700">Đang mở cổng quản lý…</p>}>
+        <ManagementApp />
+      </Suspense>
+    )}
   </React.StrictMode>
 );

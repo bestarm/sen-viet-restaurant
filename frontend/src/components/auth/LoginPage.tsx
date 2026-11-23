@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { Utensils, Lock, User, AlertCircle, ArrowRight } from 'lucide-react';
+import { Utensils, Lock, User, AlertCircle, ArrowLeft, ArrowRight } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
@@ -46,6 +46,10 @@ export const LoginPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 to-slate-200 flex flex-col justify-center py-8 px-4 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">
+        <a href="/" className="btn-touch inline-flex items-center gap-2 px-2 text-sm font-semibold text-brand-700 hover:underline">
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          Về trang giới thiệu
+        </a>
         <div className="mx-auto h-16 w-16 rounded-2xl bg-brand-600 flex items-center justify-center text-white shadow-xl shadow-brand-600/30">
           <Utensils className="h-9 w-9" />
         </div>
