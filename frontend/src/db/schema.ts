@@ -38,6 +38,7 @@ export interface Batch {
   finishedAt: string | null;
   warningMessage: string | null;
   scalePhotoUrl?: string;
+  rawPhotoUrl?: string;
   approvalStatus?: 'CHO_DUYET' | 'HOP_LE' | 'BIEN_BAN' | string;
   approvalNote?: string;
   approvedBy?: string;
