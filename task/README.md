@@ -54,6 +54,22 @@
 
 ---
 
+### E. Kế Hoạch Đặc Tả Nghiệp Vụ, Khảo Sát UX & Chuyển Dịch Product
+
+| Tên tài liệu | Phân loại | Mô tả nội dung trọng tâm |
+| :--- | :---: | :--- |
+| [KE_HOACH_TASK_TAI_CAU_TRUC_KHO_VA_LUONG_BEP_5_NUT.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_TAI_CAU_TRUC_KHO_VA_LUONG_BEP_5_NUT.md) | Nghiệp vụ Kho & Bếp | Tái cấu trúc Kho 2 tầng (trước & sau chế biến), Chuỗi 5 nút cảm ứng Bếp, Cân hàng mới về & Xuất hủy theo lô. |
+| [KE_HOACH_TASK_QUAN_LY_KHO_VA_CHONG_GIAN_LAN.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_QUAN_LY_KHO_VA_CHONG_GIAN_LAN.md) | Nghiệp vụ Kho & Bếp | Giải pháp kỹ thuật chống gian lận định lượng, bắt buộc ảnh cân mẻ và đối soát số liệu xuất nhập tồn. |
+| [TASKS_QUAN_LY_KHO_SENVIET.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/TASKS_QUAN_LY_KHO_SENVIET.md) | Nghiệp vụ Kho & Bếp | Bộ tiêu chuẩn chi tiết về quản lý thẻ kho, lô hàng nhà cung cấp và đối soát công nợ. |
+| [KE_HOACH_TASK_HOAN_THIEN_LOGIC_KHO_VA_TRAI_NGHIEM.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_HOAN_THIEN_LOGIC_KHO_VA_TRAI_NGHIEM.md) | Nghiệp vụ Kho & Bếp | Tối ưu trải nghiệm thao tác kho, ẩn đơn giá tài chính đối với Bếp trưởng/Bếp viên. |
+| [KE_HOACH_TASK_TOI_UU_UI_UX_PC_16_9.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_TOI_UU_UI_UX_PC_16_9.md) | Thiết kế UI/UX | Quy chuẩn tối ưu hiển thị màn hình ngang Desktop 16:9 cho máy tính Văn phòng & Kế toán. |
+| [BAO_CAO_BAT_TIEN_VA_LOI_UX_VAI_TRO_BEP.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/BAO_CAO_BAT_TIEN_VA_LOI_UX_VAI_TRO_BEP.md) | Khảo sát UX | Khảo sát thực tế các điểm bất tiện của nhân viên bếp và giải pháp khắc phục bằng nút bấm lớn tối thiểu 48px. |
+| [HUONG_DAN_TRAI_NGHIEM_THEO_VAI_TRO.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/HUONG_DAN_TRAI_NGHIEM_THEO_VAI_TRO.md) | Hướng dẫn kiểm thử | Sổ tay kịch bản kiểm thử trải nghiệm theo 5 vai trò hệ thống (Bếp, Quản lý bếp, Quản lý chi nhánh, Kế toán, Chủ chuỗi). |
+| [KE_HOACH_TASK_CHUYEN_DICH_SANG_PRODUCT.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_CHUYEN_DICH_SANG_PRODUCT.md) | Kế hoạch nâng cấp | Lộ trình dịch chuyển toàn bộ mã nguồn và test suite sang thư mục Production (`backend`, `frontend`, `database`). |
+| [KE_HOACH_TASK_NANG_CAP_SAN_PHAM.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/KE_HOACH_TASK_NANG_CAP_SAN_PHAM.md) | Kế hoạch nâng cấp | Kế hoạch tổng thể nâng cấp dự án và hoàn thiện các tiêu chuẩn hợp đồng kinh tế. |
+
+---
+
 ## 2. Quy Trình Cập Nhật & Thực Thi (Execution Protocol)
 
 1. **Phân nhánh Git**: `feature/p12-role-views-and-demo-data`
