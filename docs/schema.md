@@ -1,6 +1,6 @@
 # ĐẶC TẢ CƠ SỞ DỮ LIỆU CHÍNH THỨC — SEN VIỆT BUFFET
 
-> Tài liệu chi tiết và đầy đủ nhất về cấu trúc 35 bảng CSDL, 6 phân hệ nghiệp vụ, quan hệ Foreign Keys và chiến lược Index được lưu trữ tại:  
+> Tài liệu chi tiết và đầy đủ nhất về cấu trúc 36 bảng CSDL, 6 phân hệ nghiệp vụ, mô hình kho 2 tầng, quy trình 5 nút cảm ứng Bếp, quan hệ Foreign Keys và chiến lược Index được lưu trữ tại:  
 > 👉 [DATABASE_SCHEMA.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md)
 
 ---
@@ -8,13 +8,16 @@
 ## TỔNG QUAN HỆ THỐNG CƠ SỞ DỮ LIỆU
 * **Hệ quản trị CSDL**: PostgreSQL 16 (Container `senviet-postgres`)
 * **Database Name**: `senviet_db` | **Port**: `5432`
-* **Cơ chế Migration**: Flyway Migration (11 phiên bản: `V1` $\rightarrow$ `V11`)
+* **Cơ chế Migration**: Flyway Migration (13 phiên bản: `V1` $\rightarrow$ `V13`)
 * **Encoding**: `UTF-8` | **Múi giờ**: `Asia/Ho_Chi_Minh` (`UTC+7`)
-* **Tổng số bảng**: **35 bảng nghiệp vụ** + 1 bảng theo dõi migration `flyway_schema_history`.
+* **Tổng số bảng**: **36 bảng nghiệp vụ** + 1 bảng theo dõi migration `flyway_schema_history`.
+* **Kiến trúc Kho 2 tầng**:
+  1. *Kho Trước Chế Biến*: 217 mặt hàng nguyên liệu thô thực tế theo 11 nhóm danh mục chuẩn hóa (Quế Võ T11/2026).
+  2. *Kho Sau Chế Biến*: Quản lý thành phẩm món ăn theo số lượng đĩa sẵn sàng ra line (`processed_dishes`).
 
 ---
 
-## DANH MỤC 35 BẢNG THEO 6 PHÂN HỆ NGHIỆP VỤ
+## DANH MỤC 36 BẢNG THEO 6 PHÂN HỆ NGHIỆP VỤ
 
 ### 1. Phân hệ Xác thực, Phân quyền & Chi nhánh (5 Bảng)
 * [`branches`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#11-bảng-branches-danh-mục-chi-nhánh): Quản lý 2 chi nhánh (Thái Nguyên `CN_THAI_NGUYEN` & Quế Võ `CN_QUE_VO`), tọa độ GPS Geofencing.
@@ -23,22 +26,23 @@
 * [`user_roles`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#14-bảng-user_roles-bảng-phân-quyền-người-dùng---vai-trò): Bảng quan hệ nhiều - nhiều gán vai trò (hỗ trợ kiêm nhiệm).
 * [`audit_logs`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#15-bảng-audit_logs-nhật-ký-vết-kiểm-toán): Nhật ký vết kiểm toán cho toàn bộ hành động nhạy cảm.
 
-### 2. Phân hệ Vận hành Bếp & Quy trình 4 Nút (8 Bảng)
-* [`items`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#21-bảng-items-danh-mục-hàng-hóa--món-ăn): Danh mục hàng hóa (nguyên liệu thô, bán thành phẩm, món line, đồ uống, gia vị). Giá vốn ẩn đối với thợ bếp và Bếp trưởng.
+### 2. Phân hệ Vận hành Bếp & Quy trình 5 Nút Cảm Ứng (9 Bảng)
+* [`items`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#21-bảng-items-danh-mục-hàng-hóa--món-ăn): Danh mục hàng hóa (217 mặt hàng nguyên liệu thô trước chế biến, bán thành phẩm, đồ uống, gia vị). Giá vốn ẩn đối với thợ bếp.
 * [`recipes`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#22-bảng-recipes-công-thức--định-mức-món): Công thức món ăn và định mức hao hụt chuẩn cho phép.
-* [`recipe_ingredients`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#23-bảng-recipe_ingredients-chi-tiết-định-mức-nguyên-liệu-công-thức): Chi tiết nguyên liệu cấu thành 1 mẻ.
-* [`take_out_logs`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#24-bảng-take_out_logs-nút-1-lấy-hàng-ra-chế-biến): **Nút 1** - Rút nguyên liệu ra chế biến, trừ tồn kho tức thời, cấm rút quá tồn khả dụng.
-* [`processing_batches`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#25-bảng-processing_batches-nút-2-cân-mẻ--cân-thành-phẩm): **Nút 2** - Cân mẻ đầu vào, ẩn định mức % hao hụt, chụp ảnh cân thành phẩm thực tế, cảnh báo mở mẻ trùng.
-* [`damage_reports`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#26-bảng-damage_reports-nút-3-báo-hỏng-nguyên-liệu): **Nút 3** - Báo hỏng hàng, ảnh chụp nén canvas $\le 250$ KB, xét duyệt bởi Quản lý Bếp.
-* [`line_item_logs`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#27-bảng-line_item_logs-nút-4-bấm-ra-line-1): **Nút 4** - Ghi nhận đĩa thức ăn đưa ra line buffet, cơ chế chống click đúp.
-* [`daily_waste_confirmations`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#28-bảng-daily_waste_confirmations-biên-bản-chốt-hủy-thức-ăn-cuối-ngày): Chốt hủy thức ăn thừa trên quầy buffet cuối ngày.
+* [`recipe_ingredients`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#23-bảng-recipe_ingredients-chi-tiết-định-mức-nguyên-liệu-công-thức): Chi tiết nguyên liệu cấu thành 1 mẻ món ăn.
+* [`take_out_logs`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#24-bảng-take_out_logs-nút-1-lấy-hàng-ra-chế-biến-theo-công-thức): **Nút 1** - Rút nguyên liệu ra chế biến theo công thức món ăn, kèm ảnh chụp mẻ trước chế biến, trừ tồn kho tức thời.
+* [`processing_batches`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#25-bảng-processing_batches-nút-2-cân-thành-phẩm--nhập-kho-sau-chế-biến): **Nút 2** - Cân thành phẩm sau chế biến, ảnh chụp màn hình cân, tự động cộng số đĩa thành phẩm vào Kho sau chế biến (`processed_dishes`).
+* [`processed_dishes`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#26-bảng-processed_dishes-kho-món-ăn-sau-chế-biến): **Kho Sau Chế Biến** - Quản lý tồn kho đĩa món ăn đã nấu chín, sẵn sàng tiếp ứng cho quầy buffet line.
+* [`damage_reports`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#27-bảng-damage_reports-nút-4-báo-hỏng-nguyên-liệu--mẻ-nấu-hỏng): **Nút 4** - Báo hỏng nguyên liệu hoặc mẻ nấu hỏng, ảnh chụp nén canvas $\le 250$ KB, xét duyệt bởi Quản lý Bếp.
+* [`line_item_logs`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#28-bảng-line_item_logs-nút-3-bấm-ra-line-1): **Nút 3** - Ghi nhận đĩa thức ăn đưa ra line buffet, tự động trừ tồn kho sau chế biến, chống click đúp.
+* [`daily_waste_confirmations`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#29-bảng-daily_waste_confirmations-nút-5-tổng-hợp-món-dùng--xử-lý-đồ-thừa-cuối-ngày): **Nút 5** - Bảng tổng hợp món dùng trong ngày & Biên bản chốt cân hủy thức ăn thừa cuối ngày kèm ảnh cân.
 
 ### 3. Phân hệ Quản lý Kho, Lô hàng & Nhà cung cấp (7 Bảng)
 * [`suppliers`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#31-bảng-suppliers-danh-mục-nhà-cung-cấp): Danh bạ đối tác cung ứng và số dư công nợ.
 * [`import_batches`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#32-bảng-import_batches-quản-lý-lô-hàng-nhập-kho): Quản lý hạn sử dụng, ngày sản xuất và số lượng của từng lô hàng theo nguyên tắc FIFO.
 * [`warehouse_documents`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#33-bảng-warehouse_documents-phiếu-nhập--xuất-kho): Phiếu nhập NCC, xuất chế biến, xuất hủy, điều chuyển chi nhánh.
 * [`warehouse_document_items`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#34-bảng-warehouse_document_items-chi-tiết-mặt-hàng-trong-phiếu-kho): Chi tiết mặt hàng, số lượng và đơn giá trong phiếu kho.
-* [`inventory_stocks`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#35-bảng-inventory_stocks-sổ-theo-dõi-tồn-kho-thực-tế): Tồn kho theo từng chi nhánh và phân loại kho (Kho đông lạnh, Kho mát, Kho đồ khô...).
+* [`inventory_stocks`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#35-bảng-inventory_stocks-sổ-theo-dõi-tồn-kho-thực-tế): Tồn kho nguyên liệu trước chế biến theo từng chi nhánh và phân loại kho.
 * [`inventory_checks`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#36-bảng-inventory_checks-phiếu-kiểm-kê-kho-định-kỳ): Đợt kiểm kê kho định kỳ.
 * [`inventory_check_items`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#37-bảng-inventory_check_items-chi-tiết-mặt-hàng-kiểm-kê): Tồn sổ sách vs Tồn thực tế vs Chênh lệch thừa thiếu.
 
@@ -62,6 +66,10 @@
 * [`salary_increase_proposals`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#63-bảng-salary_increase_proposals-đề-xuất-tăng-lương-nhân-viên): Đề xuất tăng bậc lương cho nhân sự.
 * [`payroll_periods`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#64-bảng-payroll_periods-kỳ-tính-lương--trạng-thái-khóa-sổ): Kỳ tính lương tháng kèm cờ khóa sổ `is_locked` chống sửa đổi số liệu quá khứ.
 * [`payrolls`](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md#65-bảng-payrolls-bảng-lương-chi-tiết-từng-nhân-viên): Bảng lương chi tiết từng nhân viên (công, lương cứng, phụ cấp, thưởng, phạt, ứng, thực lĩnh).
+
+---
+
+> Toàn bộ chi tiết về cột, kiểu dữ liệu, ràng buộc và sơ đồ ERD Mermaid xem tại: [DATABASE_SCHEMA.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md)
 
 ---
 
