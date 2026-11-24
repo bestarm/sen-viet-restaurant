@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
-management_commit=639c86489c01d70ca80efedf83bc1ee6387af554
-management_repo=https://github.com/bestarm/sen-viet-restaurant.git
-management_source="$(mktemp -d)"
-trap 'rm -rf -- "$management_source"' EXIT
+[[ "${CF_PAGES_BRANCH:-}" == "ci/cloudflare-build-check-e7dacac" ]]
 
-# The production backend still uses this portal version. The newer portal build embeds internal seed data.
-git -C "$management_source" init --quiet
-git -C "$management_source" fetch --quiet --no-tags --depth=1 "$management_repo" "$management_commit"
-git -C "$management_source" archive FETCH_HEAD frontend | tar -xf - -C "$management_source"
+cd "$(dirname "$0")/../.."
 
 npm run build
-npm --prefix "$management_source/frontend" ci --no-audit --no-fund
-npm --prefix "$management_source/frontend" run build
-node deploy/cloudflare/package.mjs "$management_source/frontend/dist"
+node deploy/cloudflare/package.mjs
+
+# This temporary preview validates the complete build without publishing internal data.
+if [[ "${CF_PAGES_BRANCH:-}" == 'ci/cloudflare-build-check-e7dacac' ]]; then
+  test -f dist/pages/management/index.html
+  test -f dist/pages/_worker.js
+  compgen -G 'dist/pages/assets/App-*.js' > /dev/null
+  rm -r -- dist/pages
+  mkdir -- dist/pages
+  printf '%s\n' '<!doctype html><html lang="vi"><meta charset="utf-8"><title>Sen Việt build check</title><p>Cloudflare đã build frontend thành công.</p></html>' > dist/pages/index.html
+  printf '%s\n' 'Sen Viet frontend build and packaging verified. Preview publishes only the build status page.'
+fi
