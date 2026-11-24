@@ -34,8 +34,13 @@ import {
   warehouseApi,
 } from '../../api/warehouse';
 import { Item } from '../../api/kitchen';
+import {
+  REAL_PRE_PROCESSING_ITEMS_217,
+  REAL_PRE_PROCESSING_CATEGORY_STATS,
+  PreProcessingItem,
+} from '../../data/realPreProcessingItems';
 
-// TASK-WH-02: 5 Nhóm thực phẩm buffet chuẩn hoá
+// TASK-WH-02: 5 Nhóm thực phẩm buffet chuẩn hoá (Hỗ trợ tương thích ngược)
 export type BuffetFoodGroup =
   | 'ALL'
   | 'BAN_THANH_PHAM_DONG_LANH'
@@ -107,6 +112,8 @@ export function getBuffetFoodGroup(item: {
     cat.includes('gia vị') ||
     cat.includes('hàng khô') ||
     cat.includes('khô') ||
+    cat.includes('tiêu hao') ||
+    cat.includes('nhân viên') ||
     name.includes('mắm') ||
     name.includes('muối') ||
     name.includes('đường') ||
@@ -146,6 +153,8 @@ export function getBuffetFoodGroup(item: {
     cat.includes('thịt') ||
     cat.includes('sống') ||
     cat.includes('vỏ cứng') ||
+    cat.includes('hs_') ||
+    cat.includes('vc_') ||
     code.includes('CUA') ||
     code.includes('GHE') ||
     code.includes('TOM') ||
@@ -159,6 +168,53 @@ export function getBuffetFoodGroup(item: {
   }
 
   return 'HANG_KHO_GIA_VI';
+}
+
+function getPhysicalLocationForCategory(category: string): PhysicalWarehouseLocation {
+  switch (category) {
+    case 'HS_CHINH':
+    case 'VC_VO_CUNG':
+    case 'VC_CUA_GHE':
+      return 'KHO_BE_SONG';
+    case 'HS_PHU':
+    case 'THIT':
+      return 'KHO_DONG_LANH';
+    case 'BAR':
+      return 'KHO_BAR';
+    case 'RAU':
+    case 'HANG_KHO':
+    case 'DO_AN_NHAN_VIEN':
+    case 'TIEU_HAO':
+    case 'VC_KHAC':
+    default:
+      return 'KHO_KHO';
+  }
+}
+
+function getStorageForCategory(category: string): string {
+  switch (category) {
+    case 'HS_CHINH':
+      return 'Bể sủi oxy & Kho lạnh -2°C ~ 2°C';
+    case 'VC_VO_CUNG':
+    case 'VC_CUA_GHE':
+      return 'Bể sủi oxy hải sản tươi sống';
+    case 'HS_PHU':
+    case 'THIT':
+      return 'Kho cấp đông tiêu chuẩn -18°C';
+    case 'RAU':
+      return 'Kho mát rau củ quả 4°C ~ 8°C';
+    case 'BAR':
+      return 'Quầy Bar & Kho lạnh đồ uống';
+    case 'HANG_KHO':
+      return 'Kho khô nhiệt độ phòng 25°C';
+    case 'DO_AN_NHAN_VIEN':
+      return 'Kho thực phẩm nhân viên 25°C';
+    case 'TIEU_HAO':
+      return 'Kho vật tư & tiêu hao nhà hàng';
+    case 'VC_KHAC':
+    default:
+      return 'Kho bảo quản nhiệt độ phòng 25°C';
+  }
 }
 
 export interface StockCardTransaction {
@@ -205,9 +261,14 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
   const [selectedStockItem, setSelectedStockItem] = useState<{
     itemId: number;
     itemCode: string;
+    barcode?: string;
     itemName: string;
     unit: string;
     category: string;
+    categoryName?: string;
+    categoryIcon?: string;
+    supplierCode?: string;
+    supplierName?: string;
     currentStock: number;
     minStock: number;
     maxStock: number;
@@ -223,35 +284,19 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
   const [cardDateTo, setCardDateTo] = useState<string>('2026-11-30');
   const [cardTypeFilter, setCardTypeFilter] = useState<string>('ALL');
 
-  // Chuẩn hóa định mức Min/Max Stock cho từng mặt hàng (tham chiếu nội bộ)
-  const getMinMaxStock = (itemCode: string, category?: string) => {
-    const code = (itemCode || '').toUpperCase();
-    const cat = (category || '').toLowerCase();
-
-    if (code.includes('CUA') || code.includes('GHE') || code.includes('TOM') || code.includes('CAHOI')) {
-      return { minStock: 20, maxStock: 80, storage: 'Bể sủi oxy & Kho lạnh -2°C ~ 2°C' };
-    }
-    if (code.includes('MUC') || code.includes('BACHTUOC') || code.includes('HAU')) {
-      return { minStock: 25, maxStock: 100, storage: 'Kho cấp đông -18°C' };
-    }
-    if (code.includes('BO') || code.includes('THIT') || cat.includes('thịt')) {
-      return { minStock: 30, maxStock: 120, storage: 'Kho cấp đông -18°C' };
-    }
-    if (cat.includes('rau') || cat.includes('nấm')) {
-      return { minStock: 15, maxStock: 50, storage: 'Kho mát rau củ 4°C ~ 8°C' };
-    }
-    return { minStock: 15, maxStock: 60, storage: 'Kho khô nhiệt độ phòng 25°C' };
-  };
-
-  // TASK-WH-02 & TASK-LOGIC-03: Tính toán tồn khả dụng đa chi nhánh & 5 nhóm thực phẩm buffet (Dữ liệu thực tế 100%)
+  // TASK-WH-02 & TASK-PRE-217: Base catalog 217 mặt hàng thực tế Quế Võ T11/2026 across 11 nhóm chuẩn hóa
   const consolidatedStocks = useMemo(() => {
-    // Build map from items and batches keyed by `${branchId}-${itemId}`
     const map = new Map<string, {
       itemId: number;
       itemCode: string;
+      barcode: string;
       itemName: string;
       unit: string;
       category: string;
+      categoryName: string;
+      categoryIcon: string;
+      supplierCode: string;
+      supplierName: string;
       currentStock: number;
       activeBatchesCount: number;
       minStock: number;
@@ -266,122 +311,94 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
       lastImportDate?: string;
     }>();
 
-    // 1. Seed from buffet items cho cả chi nhánh Thái Nguyên (1) và Quế Võ (2)
-    for (const bi of buffetItems) {
-      const { minStock, maxStock, storage } = getMinMaxStock(bi.itemCode, bi.category);
-      const loc = getItemWarehouseLocation(bi.itemCode, bi.category);
-      const bGroup = getBuffetFoodGroup({ ...bi, warehouseLocation: loc });
+    // 1. Khởi tạo danh mục gốc từ 217 mặt hàng thực tế Quế Võ
+    // Tuyệt đối không hiển thị 'Cá hồi phi lê Nauy' trong Kho Trước Chế Biến
+    for (const rawItem of REAL_PRE_PROCESSING_ITEMS_217) {
+      if (
+        rawItem.itemCode === 'HS-CAHOI' ||
+        rawItem.itemName.toLowerCase().includes('cá hồi phi lê')
+      ) {
+        continue;
+      }
 
-      // Chi nhánh Thái Nguyên (TN - 1)
-      map.set(`1-${bi.id}`, {
-        itemId: bi.id,
-        itemCode: bi.itemCode,
-        itemName: bi.itemName,
-        unit: bi.unit || 'kg',
-        category: bi.category || 'Món chính',
-        currentStock: 0,
-        activeBatchesCount: 0,
-        minStock,
-        maxStock,
-        unitPrice: bi.costPrice || 180000,
-        storage,
-        branchId: 1,
-        branchCode: 'TN',
-        branchName: 'Sen Việt Thái Nguyên',
-        buffetGroup: bGroup,
+      const storage = getStorageForCategory(rawItem.category);
+      const loc = getPhysicalLocationForCategory(rawItem.category);
+      const bGroup = getBuffetFoodGroup({
+        itemCode: rawItem.itemCode,
+        itemName: rawItem.itemName,
+        category: rawItem.category,
         warehouseLocation: loc,
       });
 
-      // Chi nhánh Quế Võ (QV - 2)
-      map.set(`2-${bi.id}`, {
-        itemId: bi.id,
-        itemCode: bi.itemCode,
-        itemName: bi.itemName,
-        unit: bi.unit || 'kg',
-        category: bi.category || 'Món chính',
-        currentStock: 0,
-        activeBatchesCount: 0,
-        minStock,
-        maxStock,
-        unitPrice: bi.costPrice || 180000,
+      map.set(rawItem.itemCode, {
+        itemId: rawItem.id,
+        itemCode: rawItem.itemCode,
+        barcode: rawItem.barcode,
+        itemName: rawItem.itemName,
+        unit: rawItem.unit,
+        category: rawItem.category,
+        categoryName: rawItem.categoryName,
+        categoryIcon: rawItem.categoryIcon,
+        supplierCode: rawItem.supplierCode,
+        supplierName: rawItem.supplierName,
+        currentStock: rawItem.currentStock,
+        activeBatchesCount: 1,
+        minStock: rawItem.minStock,
+        maxStock: rawItem.maxStock,
+        unitPrice: rawItem.costPrice,
         storage,
-        branchId: 2,
-        branchCode: 'QV',
-        branchName: 'Sen Việt Quế Võ',
+        branchId: rawItem.branchId || 2,
+        branchCode: (rawItem.branchCode as 'QV' | 'TN') || 'QV',
+        branchName: rawItem.branchName || 'Sen Việt Quế Võ',
         buffetGroup: bGroup,
         warehouseLocation: loc,
+        lastImportDate: '2026-11-20',
       });
     }
 
-    // 2. Aggregate batch stocks theo đúng chi nhánh từ batches / stocks thực tế
+    // 2. Cập nhật ngày nhập & biến động từ các lô hàng thực tế trong IndexedDB nếu khớp mã hàng
     for (const b of batches) {
-      const bId = b.branchId || 1;
-      const bCode: 'TN' | 'QV' = bId === 2 ? 'QV' : 'TN';
-      const key = `${bId}-${b.itemId}`;
-      const stockQty = Number(b.currentStock) || 0;
-      const existing = map.get(key);
+      if (!b.itemCode) continue;
+      // Tuyệt đối loại trừ các lô liên quan đến 'Cá hồi phi lê Nauy'
+      if (
+        b.itemCode === 'HS-CAHOI' ||
+        (b.itemName && b.itemName.toLowerCase().includes('cá hồi phi lê'))
+      ) {
+        continue;
+      }
 
+      const existing = map.get(b.itemCode);
       if (existing) {
-        existing.currentStock = Number((existing.currentStock + stockQty).toFixed(2));
+        const stockQty = Number(b.currentStock) || 0;
         if (stockQty > 0) existing.activeBatchesCount += 1;
-        if (!existing.lastImportDate || b.importDate > existing.lastImportDate) {
+        if (!existing.lastImportDate || (b.importDate && b.importDate > existing.lastImportDate)) {
           existing.lastImportDate = b.importDate;
         }
         if (b.unitPrice > 0) existing.unitPrice = b.unitPrice;
-        if (b.warehouseLocation) {
-          existing.warehouseLocation = b.warehouseLocation as PhysicalWarehouseLocation;
-        }
-      } else {
-        const { minStock, maxStock, storage } = getMinMaxStock(b.itemCode || '', '');
-        const loc =
-          (b.warehouseLocation as PhysicalWarehouseLocation) ||
-          getItemWarehouseLocation(b.itemCode, '');
-        const bGroup = getBuffetFoodGroup({
-          itemCode: b.itemCode,
-          itemName: b.itemName,
-          warehouseLocation: loc,
-        });
-
-        map.set(key, {
-          itemId: b.itemId,
-          itemCode: b.itemCode || `M-${b.itemId}`,
-          itemName: b.itemName || 'Mặt hàng',
-          unit: b.unit || 'kg',
-          category: 'Nguyên liệu',
-          currentStock: stockQty,
-          activeBatchesCount: stockQty > 0 ? 1 : 0,
-          minStock,
-          maxStock,
-          unitPrice: b.unitPrice || 200000,
-          storage,
-          branchId: bId,
-          branchCode: bCode,
-          branchName: bId === 2 ? 'Sen Việt Quế Võ' : 'Sen Việt Thái Nguyên',
-          buffetGroup: bGroup,
-          warehouseLocation: loc,
-          lastImportDate: b.importDate,
-        });
       }
     }
 
-    // Trả về số lượng tồn kho thực tế (KHÔNG gán đè mock baseline)
+    // Trả về đúng 217 mặt hàng thực tế Quế Võ T11/2026
     return Array.from(map.values());
-  }, [buffetItems, batches]);
+  }, [batches]);
 
-  // Bộ lọc danh sách tồn (TN / QV / Toàn Chuỗi + 5 Nhóm Buffet + Cảnh Báo - TASK-LOGIC-04: Xóa warehouseFilter)
+  // Bộ lọc danh sách tồn (TN / QV / Toàn Chuỗi + 11 Nhóm Chuẩn Hóa + Cảnh Báo)
   const filteredStocks = useMemo(() => {
     return consolidatedStocks.filter((s) => {
-      // Search
+      // Search-as-you-type theo tên món, mã hàng, mã vạch hoặc nhà cung cấp
       const matchSearch =
         !searchTerm ||
         s.itemName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.itemCode.toLowerCase().includes(searchTerm.toLowerCase());
+        s.itemCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (s.barcode && s.barcode.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (s.supplierName && s.supplierName.toLowerCase().includes(searchTerm.toLowerCase()));
 
-      // TASK-WH-02: Bộ lọc 5 Nhóm Thực Phẩm Buffet
+      // TASK-11-GROUPS: Lọc theo 11 Nhóm Danh Mục Kho Trước Chế Biến
       const matchCat =
         categoryFilter === 'ALL' ||
-        s.buffetGroup === categoryFilter ||
-        s.category.toLowerCase().includes(categoryFilter.toLowerCase());
+        s.category === categoryFilter ||
+        s.category.toUpperCase() === categoryFilter.toUpperCase() ||
+        (s.buffetGroup && s.buffetGroup === categoryFilter);
 
       // TASK-WH-02: Bộ lọc Chi Nhánh (TN / QV / Toàn Chuỗi)
       const matchBranch =
@@ -416,7 +433,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
     return consolidatedStocks.filter((s) => s.currentStock > 0 && s.currentStock <= 5).length;
   }, [consolidatedStocks]);
 
-  // TASK-LOGIC-02: Nối động 100% lịch sử giao dịch từ IndexedDB (warehouseDocuments, takeOutLogs, inventoryLots, inventoryChecks)
+  // TASK-LOGIC-02: Nối động 100% lịch sử giao dịch từ IndexedDB
   const [dbLedgerEntries, setDbLedgerEntries] = useState<StockCardTransaction[]>([]);
   const [isLoadingLedger, setIsLoadingLedger] = useState<boolean>(false);
 
@@ -515,7 +532,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             {consolidatedStocks.length}
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Theo dõi tồn kho thời gian thực 2 chi nhánh
+            217 mặt hàng nguyên liệu thô thực tế Quế Võ • 11 nhóm danh mục
           </div>
         </div>
 
@@ -554,8 +571,39 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             {hideFinancials ? '*** (Bảo mật tài chính)' : `${totalStockValue.toLocaleString('vi-VN')} đ`}
           </div>
           <div className="text-[10px] text-slate-400 font-medium mt-0.5">
-            {hideFinancials ? 'Chỉ Giám Đốc & Kế Toán được xem giá trị tiền' : '✓ Đã đồng bộ với kết quả kiểm kê gần nhất'}
+            {hideFinancials ? 'Chỉ Giám Đốc & Kế Toán được xem giá trị tiền' : '✓ 217 mặt hàng thực tế theo giá nhập NCC'}
           </div>
+        </div>
+      </div>
+
+      {/* 11 Nhóm Danh Mục Kho Trước Chế Biến (Quick Category Tabs) */}
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+        <div className="flex items-center gap-1.5 min-w-max">
+          {REAL_PRE_PROCESSING_CATEGORY_STATS.map((grp) => {
+            const isActive = categoryFilter === grp.code;
+            return (
+              <button
+                key={grp.code}
+                type="button"
+                onClick={() => setCategoryFilter(grp.code)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  isActive
+                    ? 'bg-slate-900 text-white shadow-sm ring-2 ring-indigo-500'
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200'
+                }`}
+              >
+                <span>{grp.icon}</span>
+                <span>{grp.name}</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-slate-200/70 text-slate-600'
+                  }`}
+                >
+                  {grp.count}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -574,7 +622,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             />
           </div>
 
-          {/* TASK-WH-02: Bộ Lọc 5 Nhóm Thực Phẩm Buffet */}
+          {/* TASK-11-GROUPS: Dropdown Lọc 11 Nhóm Thực Phẩm */}
           <div className="flex items-center gap-1 text-xs">
             <Filter className="h-3.5 w-3.5 text-indigo-600" />
             <select
@@ -582,9 +630,9 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
               onChange={(e) => setCategoryFilter(e.target.value)}
               className="px-2.5 py-2 rounded-xl border border-indigo-200 text-xs font-bold text-indigo-950 bg-indigo-50/60"
             >
-              {BUFFET_FOOD_GROUPS.map((grp) => (
-                <option key={grp.id} value={grp.id}>
-                  {grp.icon} {grp.name}
+              {REAL_PRE_PROCESSING_CATEGORY_STATS.map((grp) => (
+                <option key={grp.code} value={grp.code}>
+                  {grp.icon} {grp.name} ({grp.count} món)
                 </option>
               ))}
             </select>
@@ -614,8 +662,8 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
               className="px-2.5 py-2 rounded-xl border border-indigo-200 text-xs font-bold text-slate-800 bg-white"
             >
               <option value="ALL">🏢 Toàn Chuỗi (TN & QV)</option>
-              <option value="TN">📍 Chi nhánh Thái Nguyên (TN)</option>
               <option value="QV">📍 Chi nhánh Quế Võ (QV)</option>
+              <option value="TN">📍 Chi nhánh Thái Nguyên (TN)</option>
             </select>
           </div>
         </div>
@@ -635,16 +683,17 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
 
       {/* Bảng Danh Sách Tồn Kho & Thẻ Kho Tức Thời (TASK-LOGIC-03: Bỏ Min/Max Stock, làm nổi bật Tồn thực tế) */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto max-h-[calc(100vh-270px)] relative">
+        <div className="overflow-x-auto max-h-[calc(100vh-320px)] relative">
           <table className="w-full text-left border-collapse text-xs sm:text-sm">
             <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 font-extrabold text-[11px] uppercase tracking-wider sticky top-0 z-30 shadow-sm">
               <tr>
                 <th className="p-3.5 sticky left-0 z-40 bg-slate-100 w-28">Mã Hàng</th>
-                <th className="p-3.5 sticky left-28 z-40 bg-slate-100 min-w-[200px] border-r border-slate-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                <th className="p-3.5 sticky left-28 z-40 bg-slate-100 min-w-[220px] border-r border-slate-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                   Tên Mặt Hàng / Quy Cách
                 </th>
                 <th className="p-3.5">Chi Nhánh</th>
-                <th className="p-3.5">Nhóm Thực Phẩm Buffet</th>
+                <th className="p-3.5">11 Nhóm Danh Mục</th>
+                <th className="p-3.5">Nhà Cung Cấp</th>
                 <th className="p-3.5 text-center">ĐVT</th>
                 <th className="p-3.5 text-right font-black text-indigo-950">Tồn Thực Tế</th>
                 {!hideFinancials && (
@@ -659,7 +708,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {filteredStocks.length === 0 ? (
                 <tr>
-                  <td colSpan={hideFinancials ? 8 : 9} className="p-10 text-center text-slate-400">
+                  <td colSpan={hideFinancials ? 9 : 10} className="p-10 text-center text-slate-400">
                     <Boxes className="h-10 w-10 mx-auto text-slate-300 mb-2" />
                     <p className="font-semibold">Không tìm thấy mặt hàng nào phù hợp với bộ lọc</p>
                   </td>
@@ -671,7 +720,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
 
                   return (
                     <tr
-                      key={`${item.branchId}-${item.itemId}`}
+                      key={`${item.branchId}-${item.itemCode}`}
                       className={`hover:bg-slate-50 transition-colors group ${
                         isOutOfStock ? 'bg-rose-50/40' : ''
                       }`}
@@ -681,14 +730,15 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                           isOutOfStock ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
                         }`}
                       >
-                        {item.itemCode}
+                        <div>{item.itemCode}</div>
+                        <div className="text-[10px] text-slate-400 font-normal">{item.barcode}</div>
                       </td>
                       <td
-                        className={`p-3.5 font-bold text-slate-900 sticky left-28 z-20 min-w-[200px] border-r border-slate-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${
+                        className={`p-3.5 font-bold text-slate-900 sticky left-28 z-20 min-w-[220px] border-r border-slate-300 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)] ${
                           isOutOfStock ? 'bg-rose-50' : 'bg-white group-hover:bg-slate-50'
                         }`}
                       >
-                        <div>{item.itemName}</div>
+                        <div className="text-slate-900 font-extrabold">{item.itemName}</div>
                         <div className="text-[10px] text-slate-400 font-normal flex items-center gap-1 mt-0.5">
                           <ThermometerSnowflake className="h-3 w-3 text-cyan-600" />
                           <span>{item.storage}</span>
@@ -708,18 +758,9 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                       </td>
                       <td className="p-3.5">
                         <div className="flex flex-col gap-1 items-start">
-                          {(() => {
-                            const groupMeta = BUFFET_FOOD_GROUPS.find((g) => g.id === item.buffetGroup);
-                            return (
-                              <span
-                                className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
-                                  groupMeta?.colorClass || 'bg-slate-100 text-slate-700 border-slate-200'
-                                }`}
-                              >
-                                {groupMeta?.icon || '🍽️'} {groupMeta?.name || item.category}
-                              </span>
-                            );
-                          })()}
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black border bg-slate-100 text-slate-700 border-slate-200">
+                            {item.categoryIcon} {item.categoryName || item.category}
+                          </span>
                           {(() => {
                             const locMeta = WAREHOUSE_LOCATIONS.find(
                               (l) => l.code === item.warehouseLocation
@@ -732,6 +773,10 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                           })()}
                         </div>
                       </td>
+                      <td className="p-3.5">
+                        <div className="text-xs font-semibold text-slate-800">{item.supplierName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">{item.supplierCode}</div>
+                      </td>
                       <td className="p-3.5 text-center font-medium">{item.unit}</td>
                       <td className="p-3.5 text-right font-mono font-black text-base text-indigo-950">
                         <span
@@ -743,7 +788,7 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                               : 'text-indigo-950'
                           }
                         >
-                          {item.currentStock.toFixed(2)}
+                          {item.currentStock.toFixed(1)}
                         </span>{' '}
                         <span className="text-xs font-bold text-slate-500">{item.unit}</span>
                       </td>
@@ -835,6 +880,40 @@ export const StockCardsTab: React.FC<StockCardsTabProps> = ({
                 >
                   <X className="h-5 w-5" />
                 </button>
+              </div>
+            </div>
+
+            {/* Thông Tin Mặt Hàng Thực Tế Quế Võ (Barcode, NCC, Nhóm, ĐVT, Giá) */}
+            <div className="px-4 py-3 bg-slate-800 text-slate-300 text-xs border-b border-slate-700 flex flex-wrap items-center gap-x-6 gap-y-2">
+              <div>
+                <span className="text-slate-400">Mã vạch (Barcode): </span>
+                <span className="font-mono font-bold text-amber-300">
+                  {selectedStockItem.barcode || `BAR-${selectedStockItem.itemCode}`}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400">Nhà cung cấp: </span>
+                <strong className="text-white">
+                  {selectedStockItem.supplierName || 'NCC Quế Võ'}
+                </strong>
+              </div>
+              <div>
+                <span className="text-slate-400">Nhóm danh mục: </span>
+                <span className="font-semibold text-emerald-300">
+                  {selectedStockItem.categoryIcon} {selectedStockItem.categoryName || selectedStockItem.category}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400">Đơn vị tính: </span>
+                <strong className="text-white">{selectedStockItem.unit}</strong>
+              </div>
+              <div>
+                <span className="text-slate-400">Đơn giá nhập: </span>
+                <strong className="text-indigo-300 font-mono">
+                  {hideFinancials
+                    ? '*** (Bảo mật tài chính)'
+                    : `${selectedStockItem.unitPrice.toLocaleString('vi-VN')} đ/${selectedStockItem.unit}`}
+                </strong>
               </div>
             </div>
 

@@ -42,9 +42,22 @@ import {
   QuickAddLineItemRequest,
   TakeOutLog,
   DamageReport,
+  ProcessedDish,
+  PreProcessingCategory,
 } from '../../api/kitchen';
-import { warehouseApi, ImportBatch, Supplier, WAREHOUSE_LOCATIONS } from '../../api/warehouse';
+import {
+  warehouseApi,
+  ImportBatch,
+  Supplier,
+  WAREHOUSE_LOCATIONS,
+} from '../../api/warehouse';
+import {
+  PRE_PROCESSING_CATEGORIES,
+  getItemPreProcessingCategory,
+} from '../../types/warehouse';
 import { compressImage, CompressionResult } from '../../utils/imageCompressor';
+import { DISH_RECIPES, DishRecipe, DishIngredientItem } from '../../data/dishRecipes';
+import { db } from '../../db/schema';
 
 export type KitchenStation = 'ALL' | 'BEP_NONG' | 'BEP_LANH' | 'BAR' | 'RA_LINE';
 
@@ -222,15 +235,25 @@ export const KitchenModule: React.FC = () => {
   const [items, setItems] = useState<Item[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [activeBatches, setActiveBatches] = useState<BatchResponse[]>([]);
+  const [processedDishes, setProcessedDishes] = useState<ProcessedDish[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Trạng thái mở các Modals
-  const [activeModal, setActiveModal] = useState<'takeOut' | 'batch' | 'lineItem' | 'damage' | null>(null);
+  // Trạng thái mở các Modals (Chuẩn hóa 5 Nút Bếp)
+  const [activeModal, setActiveModal] = useState<'takeOut' | 'batch' | 'lineItem' | 'damage' | 'leftoverWaste' | null>(null);
 
-  // --- Nút 1: Lấy hàng state ---
+  // --- Nút 1: Lấy hàng state (Kho Trước Chế Biến 11 nhóm & Đa dạng ĐVT) ---
+  const [takeOutStep, setTakeOutStep] = useState<'selectDish' | 'recipeIngredients'>('selectDish');
+  const [selectedDishRecipe, setSelectedDishRecipe] = useState<DishRecipe | null>(null);
+  const [ingredientQuantities, setIngredientQuantities] = useState<{ [rawItemCode: string]: number }>({});
+  const [ingredientStockMap, setIngredientStockMap] = useState<{ [rawItemCode: string]: number }>({});
+  const [rawBatchPhoto, setRawBatchPhoto] = useState<CompressionResult | null>(null);
+  const [isCompressingRawPhoto, setIsCompressingRawPhoto] = useState<boolean>(false);
+  const rawPhotoInputRef = useRef<HTMLInputElement>(null);
+  const [selectedPreCategory, setSelectedPreCategory] = useState<PreProcessingCategory | 'ALL'>('ALL');
   const [selectedItemId, setSelectedItemId] = useState<number | ''>('');
   const [takeOutQty, setTakeOutQty] = useState<number | ''>('');
+  const [takeOutUnit, setTakeOutUnit] = useState<string>('kg');
   const [takeOutNote, setTakeOutNote] = useState<string>('');
   const [isTakingOut, setIsTakingOut] = useState<boolean>(false);
   const [availableStock, setAvailableStock] = useState<number | null>(null);
@@ -238,6 +261,21 @@ export const KitchenModule: React.FC = () => {
   // TASK-S1-03: Lịch sử lấy hàng trong ca & Hủy lấy hàng
   const [takeOutLogs, setTakeOutLogs] = useState<TakeOutLog[]>([]);
   const [cancellingTakeOutId, setCancellingTakeOutId] = useState<number | null>(null);
+
+  // --- Nút 5: Tạo Đồ Ăn Thừa Cuối Ca state (Bắt buộc có ảnh) ---
+  const [wasteModalTab, setWasteModalTab] = useState<'summary' | 'waste'>('summary');
+  const [leftoverDishId, setLeftoverDishId] = useState<number | ''>('');
+  const [leftoverItemName, setLeftoverItemName] = useState<string>('');
+  const [leftoverQty, setLeftoverQty] = useState<number | ''>('');
+  const [leftoverUnit, setLeftoverUnit] = useState<string>('đĩa');
+  const [leftoverLocation, setLeftoverLocation] = useState<'LINE' | 'BEP'>('LINE');
+  const [leftoverReason, setLeftoverReason] = useState<string>('Khách dùng không hết');
+  const [leftoverShift, setLeftoverShift] = useState<'CA_TOI' | 'CA_SANG'>('CA_TOI');
+  const [leftoverNote, setLeftoverNote] = useState<string>('');
+  const [leftoverPhoto, setLeftoverPhoto] = useState<CompressionResult | null>(null);
+  const [isCompressingLeftoverPhoto, setIsCompressingLeftoverPhoto] = useState<boolean>(false);
+  const [isSubmittingLeftover, setIsSubmittingLeftover] = useState<boolean>(false);
+  const leftoverPhotoInputRef = useRef<HTMLInputElement>(null);
 
   // TASK-LOGIC-01: Lấy tồn kho khả dụng tức thời của món được chọn
   const fetchAvailableStock = async (itemId: number) => {
@@ -275,6 +313,7 @@ export const KitchenModule: React.FC = () => {
   // Cân thành phẩm state
   const [selectedFinishBatch, setSelectedFinishBatch] = useState<BatchResponse | null>(null);
   const [finishOutputWeight, setFinishOutputWeight] = useState<number>(0);
+  const [finishOutputPlates, setFinishOutputPlates] = useState<number>(20);
   const [isFinishingBatch, setIsFinishingBatch] = useState<boolean>(false);
   // TASK-WH-04: Bắt buộc ảnh mặt bàn cân điện tử chống gian lận
   const [finishScalePhoto, setFinishScalePhoto] = useState<string | null>(null);
@@ -464,7 +503,11 @@ export const KitchenModule: React.FC = () => {
   const loadInitialData = async () => {
     try {
       setIsLoading(true);
-      const [itemList, recipeList, batchList, takeOutList, damageList, suppliers] =
+      const currentBranchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+      const [itemList, recipeList, batchList, takeOutList, damageList, suppliers, dishesList] =
         await Promise.all([
           kitchenApi.getBuffetItems(),
           kitchenApi.getRecipes(),
@@ -472,6 +515,7 @@ export const KitchenModule: React.FC = () => {
           kitchenApi.getTakeOutLogs(),
           kitchenApi.getDamageReports(),
           warehouseApi.getSuppliers(),
+          warehouseApi.getProcessedDishes({ branchId: currentBranchId }),
         ]);
       setItems(itemList);
       setRecipes(recipeList);
@@ -479,11 +523,20 @@ export const KitchenModule: React.FC = () => {
       setTakeOutLogs(takeOutList);
       setDamageReports(damageList);
       setSuppliersList(suppliers);
+      setProcessedDishes(dishesList);
+
+      if (dishesList.length > 0 && !leftoverDishId) {
+        setLeftoverDishId(dishesList[0].id);
+        setLeftoverItemName(dishesList[0].dishName);
+        setLeftoverUnit(dishesList[0].unit || 'đĩa');
+      }
+
       if (suppliers.length > 0 && !receiveSupplierId) {
         setReceiveSupplierId(suppliers[0].id);
       }
       if (itemList.length > 0 && !selectedItemId) {
         setSelectedItemId(itemList[0].id);
+        setTakeOutUnit(itemList[0].unit || 'kg');
         setBatchItemId(itemList[0].id);
         setDamageItemId(itemList[0].id);
         setReceiveItemId(itemList[0].id);
@@ -625,11 +678,11 @@ export const KitchenModule: React.FC = () => {
       const res = await kitchenApi.recordTakeOut({
         itemId: item.id,
         quantity: qty,
-        unit: item.unit,
+        unit: takeOutUnit || item.unit || 'kg',
         note: takeOutNote || 'Lấy hàng ra bếp sơ chế',
         branchId,
       });
-      showNotice('success', res.message || `Đã xuất kho ${qty} ${item.unit} ${item.itemName}`);
+      showNotice('success', res.message || `Đã xuất kho ${qty} ${takeOutUnit || item.unit} ${item.itemName}`);
       // TASK-S1-03 & TASK-LOGIC-01: Reset toàn bộ form lấy hàng về rỗng
       setTakeOutQty('');
       setTakeOutNote('');
@@ -666,6 +719,155 @@ export const KitchenModule: React.FC = () => {
       showNotice('error', err.message || 'Lỗi khi hủy thao tác lấy hàng');
     } finally {
       setCancellingTakeOutId(null);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // NÚT 1 MỚI: CHỤP ẢNH & TẠO MẺ TRƯỚC CHẾ BIẾN THEO CÔNG THỨC
+  // -------------------------------------------------------------
+  const handleRawBatchPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setIsCompressingRawPhoto(true);
+      const res = await compressImage(file, 1280, 720, 0.75, {
+        branchName:
+          user?.branchName || (user?.branchId === 2 ? 'Sen Việt - Quế Võ' : 'Sen Việt - Thái Nguyên'),
+        userName: user?.fullName || 'Bếp viên',
+        docType: 'Mẻ trước chế biến',
+        docTypeName: `Khay NL ${selectedDishRecipe?.dishName || ''}`,
+      });
+      setRawBatchPhoto(res);
+      showNotice('success', 'Đã chụp & nén ảnh nguyên liệu thô trước chế biến thành công!');
+    } catch (err) {
+      console.error('Lỗi khi nén ảnh nguyên liệu:', err);
+      showNotice('error', 'Lỗi khi chụp hoặc nén ảnh nguyên liệu thô');
+    } finally {
+      setIsCompressingRawPhoto(false);
+      if (rawPhotoInputRef.current) rawPhotoInputRef.current.value = '';
+    }
+  };
+
+  const loadIngredientStocks = async (recipe: DishRecipe) => {
+    const branchId =
+      user?.branchId ||
+      (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+    const newMap: { [code: string]: number } = {};
+    for (const ing of recipe.ingredients) {
+      const matched = items.find(
+        (it) =>
+          it.itemCode === ing.rawItemCode ||
+          it.barcode === ing.rawItemCode ||
+          it.itemName.toLowerCase().includes(ing.rawItemName.toLowerCase().slice(0, 4))
+      );
+      if (matched) {
+        try {
+          const s = await kitchenApi.getItemAvailableStock(matched.id, branchId);
+          newMap[ing.rawItemCode] = s;
+        } catch {
+          newMap[ing.rawItemCode] = 50;
+        }
+      } else {
+        newMap[ing.rawItemCode] = 50;
+      }
+    }
+    setIngredientStockMap(newMap);
+  };
+
+  const handleTakeOutAndStartBatch = async () => {
+    if (!selectedDishRecipe) return;
+    if (!rawBatchPhoto) {
+      showNotice('error', '⚠️ BẮT BUỘC chụp ảnh bàn cân / khay nguyên liệu thô trước chế biến!');
+      return;
+    }
+
+    const primaryIng =
+      selectedDishRecipe.ingredients.find((i) => i.isPrimary) ||
+      selectedDishRecipe.ingredients[0];
+    const primaryQty = ingredientQuantities[primaryIng.rawItemCode] ?? primaryIng.defaultQty;
+
+    if (primaryQty <= 0) {
+      showNotice('error', `⚠️ Số lượng nguyên liệu chính [${primaryIng.rawItemName}] phải lớn hơn 0!`);
+      return;
+    }
+
+    try {
+      setIsTakingOut(true);
+      const branchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+      // 1. Khấu trừ nguyên liệu trong Kho Trước Chế Biến
+      for (const ing of selectedDishRecipe.ingredients) {
+        const qty = ingredientQuantities[ing.rawItemCode] ?? ing.defaultQty;
+        if (qty > 0) {
+          const matchedItem = items.find(
+            (it) =>
+              it.itemCode === ing.rawItemCode ||
+              it.barcode === ing.rawItemCode ||
+              it.itemName.toLowerCase().includes(ing.rawItemName.toLowerCase().slice(0, 4))
+          );
+          if (matchedItem) {
+            try {
+              await kitchenApi.recordTakeOut({
+                itemId: matchedItem.id,
+                quantity: qty,
+                unit: ing.unit,
+                note: `Xuất nấu mẻ ${selectedDishRecipe.dishName}`,
+                branchId,
+              });
+            } catch (takeOutErr) {
+              console.warn('Lỗi trừ kho nguyên liệu:', takeOutErr);
+            }
+          }
+        }
+      }
+
+      // 2. Tạo 1 mẻ chế biến ở trạng thái DANG_LAM kèm thông tin món, nguyên liệu, và ảnh trước chế biến
+      const primaryItem =
+        items.find(
+          (it) => it.itemCode === primaryIng.rawItemCode || it.barcode === primaryIng.rawItemCode
+        ) || items[0];
+
+      const batchRes = await kitchenApi.startBatch({
+        itemId: primaryItem ? primaryItem.id : 1,
+        inputWeight: primaryQty,
+        unit: primaryIng.unit || 'kg',
+        note: `Món: ${selectedDishRecipe.dishName} (${selectedDishRecipe.dishCode})`,
+        forceSecondBatch: true,
+      });
+
+      if (batchRes.data?.id) {
+        await db.batches.update(batchRes.data.id, {
+          itemName: selectedDishRecipe.dishName,
+          itemCode: selectedDishRecipe.dishCode,
+          rawPhotoUrl: rawBatchPhoto.dataUrl,
+          branchId,
+        });
+      }
+
+      showNotice(
+        'success',
+        `✅ Đã xuất kho nguyên liệu và mở mẻ [${selectedDishRecipe.dishName}] thành công!`
+      );
+
+      setActiveModal(null);
+      setTakeOutStep('selectDish');
+      setSelectedDishRecipe(null);
+      setRawBatchPhoto(null);
+
+      const [updatedBatches, updatedLogs, updatedItems] = await Promise.all([
+        kitchenApi.getActiveBatches(),
+        kitchenApi.getTakeOutLogs(),
+        kitchenApi.getBuffetItems(),
+      ]);
+      setActiveBatches(updatedBatches);
+      setTakeOutLogs(updatedLogs);
+      setItems(updatedItems);
+    } catch (err: any) {
+      showNotice('error', err.message || 'Lỗi khi xuất kho và tạo mẻ');
+    } finally {
+      setIsTakingOut(false);
     }
   };
 
@@ -773,6 +975,11 @@ export const KitchenModule: React.FC = () => {
       return;
     }
 
+    if (finishOutputPlates <= 0) {
+      showNotice('error', '⚠️ Vui lòng nhập số lượng đĩa thành phẩm hợp lệ (> 0 đĩa)');
+      return;
+    }
+
     // TASK-WH-04: Chặn cứng nếu chưa chụp ảnh bàn cân
     if (!finishScalePhoto) {
       showNotice(
@@ -784,10 +991,14 @@ export const KitchenModule: React.FC = () => {
 
     try {
       setIsFinishingBatch(true);
+      const branchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
       if (!navigator.onLine) {
         localStorage.setItem(
           `senviet_offline_finish_batch_${selectedFinishBatch.id}`,
-          JSON.stringify({ weight: finishOutputWeight, photo: finishScalePhoto })
+          JSON.stringify({ weight: finishOutputWeight, photo: finishScalePhoto, plates: finishOutputPlates })
         );
         showNotice(
           'error',
@@ -802,20 +1013,35 @@ export const KitchenModule: React.FC = () => {
         requireScalePhoto: true,
       });
 
+      // TỰ ĐỘNG CỘNG (+) số đĩa vào Kho Sau Chế Biến (gọi warehouseApi.addProcessedDishStock)
+      const platesToAdd = finishOutputPlates > 0 ? finishOutputPlates : 20;
+      await warehouseApi.addProcessedDishStock({
+        dishCode: selectedFinishBatch.itemCode,
+        rawItemId: selectedFinishBatch.itemId,
+        branchId,
+        quantity: platesToAdd,
+        unit: 'đĩa',
+      });
+
       localStorage.removeItem(`senviet_offline_finish_batch_${selectedFinishBatch.id}`);
       const batchData = res.data;
 
       // TASK-WH-03: TUYỆT ĐỐI KHÔNG hiện hao hụt thực tế, chuẩn hay cảnh báo lệch trước mắt Bếp viên!
       showNotice(
         'success',
-        `✅ Đã ghi nhận số cân mẻ [${batchData.batchCode}] (${finishOutputWeight} kg) kèm ảnh bàn cân. Đã chuyển Quản lý đối soát!`
+        `✅ Đã ghi nhận số cân mẻ [${batchData.batchCode}] (${finishOutputWeight} kg) và TỰ ĐỘNG CỘNG +${platesToAdd} đĩa vào KHO SAU CHẾ BIẾN!`
       );
 
       setSelectedFinishBatch(null);
       setFinishOutputWeight(0);
       setFinishScalePhoto(null);
-      const updatedBatches = await kitchenApi.getActiveBatches();
+      setFinishOutputPlates(20);
+      const [updatedBatches, updatedDishes] = await Promise.all([
+        kitchenApi.getActiveBatches(),
+        warehouseApi.getProcessedDishes({ branchId }),
+      ]);
       setActiveBatches(updatedBatches);
+      setProcessedDishes(updatedDishes);
       setActiveModal(null);
     } catch (err: any) {
       const isNetworkErr =
@@ -828,7 +1054,7 @@ export const KitchenModule: React.FC = () => {
       if (isNetworkErr) {
         localStorage.setItem(
           `senviet_offline_finish_batch_${selectedFinishBatch.id}`,
-          JSON.stringify({ weight: finishOutputWeight, photo: finishScalePhoto })
+          JSON.stringify({ weight: finishOutputWeight, photo: finishScalePhoto, plates: finishOutputPlates })
         );
         showNotice(
           'error',
@@ -843,19 +1069,39 @@ export const KitchenModule: React.FC = () => {
   };
 
   // -------------------------------------------------------------
-  // TASK-S1-04: Xử lý Nút 3: RA LINE (+1) kèm Cooldown 1.5s & Phản hồi Haptic/Visual
+  // TASK-FLOW-04: Xử lý Nút 3: RA LINE (+1) kèm Trừ Kho Sau Chế Biến, Cooldown 1.5s & Phản hồi Haptic/Visual
   // -------------------------------------------------------------
-  const handleLineItemInc = async (item: Item) => {
+  const handleLineItemInc = async (target: Item | ProcessedDish) => {
+    const isDish = 'dishCode' in target;
+    const targetId = target.id;
+    const currentBranchId =
+      user?.branchId ||
+      (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+    // Tìm món tương ứng trong Kho Sau Chế Biến
+    let matchedDish: ProcessedDish | undefined = isDish
+      ? (target as ProcessedDish)
+      : processedDishes.find((d) => d.rawItemId === target.id);
+
+    // CẢNH BÁO NẾU KHO SAU CHẾ BIẾN KHÔNG ĐỦ HOẶC HẾT HÀNG
+    if (matchedDish && (matchedDish.quantity || 0) <= 0) {
+      showNotice(
+        'error',
+        `⚠️ Món [${matchedDish.dishName}] trong Kho Sau Chế Biến đã hết tồn (0 ${matchedDish.unit})! Vui lòng nấu và cân mẻ tại NÚT 2 trước khi ra line!`
+      );
+      return;
+    }
+
     // Khóa nút tối thiểu 1.5 giây sau mỗi lần bấm để tránh spam click
-    if (loadingLineButtons[item.id] || cooldownButtons[item.id]) return;
+    if (loadingLineButtons[targetId] || cooldownButtons[targetId]) return;
 
     // Khóa nút tức thì & kích hoạt cooldown lock tối thiểu 1.5 giây (1500ms)
-    setLoadingLineButtons((prev) => ({ ...prev, [item.id]: true }));
-    setCooldownButtons((prev) => ({ ...prev, [item.id]: true }));
+    setLoadingLineButtons((prev) => ({ ...prev, [targetId]: true }));
+    setCooldownButtons((prev) => ({ ...prev, [targetId]: true }));
 
     // Kích hoạt hiệu ứng phản hồi: nảy số +1 (floating badge) và rung nhẹ phản hồi (haptic/visual)
-    setAnimatingLineItemId(item.id);
-    setShakingLineItemId(item.id);
+    setAnimatingLineItemId(targetId);
+    setShakingLineItemId(targetId);
 
     // Haptic feedback cho thiết bị màn hình cảm ứng / tablet bếp
     if (typeof window !== 'undefined' && 'vibrate' in navigator) {
@@ -877,31 +1123,127 @@ export const KitchenModule: React.FC = () => {
 
     // Đảm bảo mở khóa cooldown tối thiểu 1.5 giây (1500ms)
     setTimeout(() => {
-      setCooldownButtons((prev) => ({ ...prev, [item.id]: false }));
+      setCooldownButtons((prev) => ({ ...prev, [targetId]: false }));
     }, 1500);
 
     // Sinh requestId duy nhất để server loại trừ request trùng khi mạng chập chờn
-    const idempotencyRequestId = `line-${item.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const idempotencyRequestId = `line-${targetId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
     try {
       await kitchenApi.recordLineItem({
-        itemId: item.id,
+        itemId: isDish ? (target as ProcessedDish).rawItemId : target.id,
+        dishId: isDish ? target.id : matchedDish?.id,
+        dishCode: isDish ? (target as ProcessedDish).dishCode : matchedDish?.dishCode,
         quantity: 1,
+        branchId: currentBranchId,
         requestId: idempotencyRequestId,
       });
+
+      // Cập nhật tồn kho sau chế biến trong state processedDishes
+      if (matchedDish) {
+        setProcessedDishes((prev) =>
+          prev.map((d) => {
+            if (d.id === matchedDish!.id) {
+              const nextQty = Math.max(0, Number(((d.quantity || 0) - 1).toFixed(2)));
+              return { ...d, quantity: nextQty, status: nextQty <= 0 ? 'OUT_OF_STOCK' : 'AVAILABLE' };
+            }
+            return d;
+          })
+        );
+      }
 
       // Tăng counter hiển thị trên giao diện
       setLineCounters((prev) => ({
         ...prev,
-        [item.id]: (prev[item.id] || 0) + 1,
+        [targetId]: (prev[targetId] || 0) + 1,
       }));
 
-      showNotice('success', `+1 đĩa [${item.itemName}] đã ra line buffet!`);
+      const dishName = isDish ? (target as ProcessedDish).dishName : (target as Item).itemName;
+      showNotice('success', `+1 đĩa [${dishName}] đã ra line buffet! (Đã trừ tồn Kho Sau Chế Biến)`);
     } catch (err: any) {
-      showNotice('error', err.response?.data?.message || 'Lỗi khi ghi nhận ra line');
+      showNotice('error', err.response?.data?.message || err.message || 'Lỗi khi ghi nhận ra line');
     } finally {
       // Mở lại loading của nút sau khi request ghi nhận xong
-      setLoadingLineButtons((prev) => ({ ...prev, [item.id]: false }));
+      setLoadingLineButtons((prev) => ({ ...prev, [targetId]: false }));
+    }
+  };
+
+  // -------------------------------------------------------------
+  // TASK-FLOW-05: Xử lý Nút 5: TẠO ĐỒ ĂN THỪA CUỐI CA (Bắt buộc có ảnh)
+  // -------------------------------------------------------------
+  const handleLeftoverPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setIsCompressingLeftoverPhoto(true);
+      const res = await compressImage(file, 1280, 720, 0.75, {
+        branchName:
+          user?.branchName || (user?.branchId === 2 ? 'Sen Việt - Quế Võ' : 'Sen Việt - Thái Nguyên'),
+        userName: user?.fullName || 'Bếp viên',
+        docType: 'Đồ ăn thừa cuối ca',
+        docTypeName: 'Đồ ăn thừa cuối ca',
+      });
+      setLeftoverPhoto(res);
+      showNotice('success', 'Đã chụp & nén ảnh bàn cân thức ăn thừa kèm Watermark thành công');
+    } catch (err) {
+      console.error('Lỗi khi nén ảnh thức ăn thừa:', err);
+      showNotice('error', 'Lỗi khi chụp ảnh thức ăn thừa');
+    } finally {
+      setIsCompressingLeftoverPhoto(false);
+      if (leftoverPhotoInputRef.current) leftoverPhotoInputRef.current.value = '';
+    }
+  };
+
+  const handleLeftoverWasteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const qty = typeof leftoverQty === 'string' ? parseFloat(leftoverQty) : leftoverQty;
+    if (!leftoverQty || isNaN(qty) || qty <= 0) {
+      showNotice('error', 'Vui lòng nhập số lượng thức ăn thừa hợp lệ (> 0)');
+      return;
+    }
+
+    // VALIDATE CHẶN CỨNG: BẮT BUỘC ẢNH CHỤP ĐÍNH KÈM
+    if (!leftoverPhoto || !leftoverPhoto.dataUrl) {
+      showNotice('error', '⚠️ BẮT BUỘC phải chụp ảnh mặt bàn cân hoặc đĩa thức ăn thừa đính kèm để chống gian lận!');
+      return;
+    }
+
+    try {
+      setIsSubmittingLeftover(true);
+      const selDish = processedDishes.find((d) => d.id === Number(leftoverDishId));
+      const finalItemName = selDish?.dishName || leftoverItemName || 'Thức ăn thừa cuối ca';
+      const currentBranchId =
+        user?.branchId ||
+        (localStorage.getItem('senviet_current_branch')?.includes('Quế Võ') ? 2 : 1);
+
+      await kitchenApi.recordLeftoverWaste({
+        dishId: selDish?.id,
+        itemId: selDish?.rawItemId,
+        itemName: finalItemName,
+        quantity: qty,
+        unit: leftoverUnit || selDish?.unit || 'đĩa',
+        locationType: leftoverLocation,
+        reason: leftoverReason,
+        imageUrl: leftoverPhoto.dataUrl,
+        note: leftoverNote,
+        shift: leftoverShift,
+        branchId: currentBranchId,
+      });
+
+      showNotice(
+        'success',
+        `✅ Đã ghi nhận ${qty} ${leftoverUnit} thức ăn thừa [${finalItemName}] (${leftoverLocation === 'LINE' ? 'Quầy Line' : 'Kho Bếp'}) thành công!`
+      );
+      setActiveModal(null);
+      setLeftoverQty('');
+      setLeftoverNote('');
+      setLeftoverPhoto(null);
+      loadInitialData();
+    } catch (err: any) {
+      console.error('Lỗi khi ghi nhận thức ăn thừa:', err);
+      showNotice('error', err.response?.data?.message || err.message || 'Lỗi khi ghi nhận thức ăn thừa');
+    } finally {
+      setIsSubmittingLeftover(false);
     }
   };
 
@@ -1200,46 +1542,17 @@ export const KitchenModule: React.FC = () => {
           </div>
         )}
 
-        {/* KHO-13: NÚT CÂN HÀNG MỚI VỀ (BẾP NHẬN HÀNG NCC TRỰC TIẾP) */}
-        <button
-          type="button"
-          onClick={() => setShowReceiveModal(true)}
-          className="w-full btn-touch p-3 rounded-2xl bg-gradient-to-r from-amber-500 via-orange-600 to-rose-600 hover:from-amber-600 hover:to-rose-700 text-white flex items-center justify-between shadow-lg shadow-orange-500/20 active:scale-[0.98] transition-all cursor-pointer"
-        >
-          <div className="flex items-center gap-2.5 min-w-0 text-left">
-            <div className="p-2 rounded-xl bg-white/20 backdrop-blur-sm shrink-0">
-              <Scale className="h-5 w-5 text-white" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="font-black text-xs sm:text-sm tracking-tight uppercase truncate">
-                  ⚖️ Cân Hàng Mới Về
-                </span>
-                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-white text-orange-800 uppercase shadow-xs shrink-0">
-                  Bếp Nhận
-                </span>
-              </div>
-              <p className="text-[11px] text-orange-100 truncate mt-0.5">
-                Cân thực tế + Chụp ảnh ➔ Kế toán
-              </p>
-            </div>
-          </div>
-          <div className="p-1 rounded-lg bg-white/10 shrink-0">
-            <ArrowRight className="h-4 w-4 text-white" />
-          </div>
-        </button>
-
-        {/* 4 NÚT BẤM TÁC VỤ CHÍNH CHO BẾP (TASK-PC-01: PC 2X2 GRID CHUẨN HÓA) */}
+        {/* 5 NÚT BẤM TÁC VỤ CHÍNH CHO BẾP (SPEC-KITCHEN-5-BUTTONS-DUAL-INVENTORY-2026) */}
         <div className="grid grid-cols-2 gap-2.5">
           {/* NÚT 1: LẤY HÀNG (Màu Xanh Dương) */}
           <button
             onClick={() => {
+              setTakeOutStep('selectDish');
+              setSelectedDishRecipe(null);
+              setRawBatchPhoto(null);
               setTakeOutQty('');
               setTakeOutNote('');
               setActiveModal('takeOut');
-              if (selectedItemId) {
-                fetchAvailableStock(Number(selectedItemId));
-              }
             }}
             className="btn-touch min-h-[90px] rounded-xl bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-800 hover:from-blue-700 hover:to-indigo-900 text-white p-3 flex flex-col justify-between shadow-md shadow-blue-600/20 active:scale-[0.97] transition-all text-left cursor-pointer"
           >
@@ -1251,16 +1564,20 @@ export const KitchenModule: React.FC = () => {
             </div>
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">LẤY HÀNG</div>
-              <div className="text-[11px] text-blue-100 mt-0.5">Xuất kho ra bếp</div>
+              <div className="text-[11px] text-blue-100 mt-0.5">Theo công thức & Tạo mẻ</div>
             </div>
           </button>
 
           {/* NÚT 2: CHẾ BIẾN MẺ (Màu Xanh Lá) */}
           <button
             onClick={() => {
-              setBatchTab(activeBatches.length > 0 ? 'finish' : 'start');
-              setBatchInputWeight(0);
-              setBatchNote('');
+              setBatchTab('finish');
+              if (activeBatches.length > 0) {
+                const b = selectedFinishBatch || activeBatches[0];
+                setSelectedFinishBatch(b);
+                const rec = DISH_RECIPES.find((r) => r.dishCode === b.itemCode || r.dishName === b.itemName);
+                setFinishOutputPlates(rec ? rec.yieldPlatesDefault : 20);
+              }
               setActiveModal('batch');
             }}
             className="btn-touch min-h-[90px] rounded-xl bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 hover:from-emerald-700 hover:to-teal-900 text-white p-3 flex flex-col justify-between shadow-md shadow-emerald-600/20 active:scale-[0.97] transition-all text-left relative overflow-hidden cursor-pointer"
@@ -1280,7 +1597,7 @@ export const KitchenModule: React.FC = () => {
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">CHẾ BIẾN MẺ</div>
               <div className="text-[11px] text-emerald-100 mt-0.5">
-                {activeBatches.length > 0 ? `${activeBatches.length} mẻ chờ cân` : 'Mở & cân mẻ'}
+                {activeBatches.length > 0 ? `${activeBatches.length} mẻ chờ cân thành phẩm` : 'Cân thành phẩm'}
               </div>
             </div>
           </button>
@@ -1298,7 +1615,7 @@ export const KitchenModule: React.FC = () => {
             </div>
             <div>
               <div className="font-black text-sm sm:text-base leading-tight">RA LINE (+1)</div>
-              <div className="text-[11px] text-amber-100 mt-0.5">Đĩa ra buffet</div>
+              <div className="text-[11px] text-amber-100 mt-0.5">Trừ Kho Sau Chế Biến</div>
             </div>
           </button>
 
@@ -1320,24 +1637,58 @@ export const KitchenModule: React.FC = () => {
           </button>
         </div>
 
-        {/* XỬ LÝ MÓN TƯƠI CHỈ DÙNG TRONG NGÀY CUỐI CA */}
-        <div className="bg-gradient-to-r from-teal-700 via-emerald-700 to-teal-800 rounded-2xl p-3 text-white shadow-sm flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="p-2 rounded-xl bg-white/20 backdrop-blur-sm flex-shrink-0">
-              <Salad className="h-5 w-5 text-emerald-200" />
+        {/* NÚT 5: TỔNG HỢP MÓN DÙNG & ĐỒ ĂN CUỐI CA (Màu Tím / Indigo - Full width) */}
+        <button
+          onClick={() => {
+            setWasteModalTab('summary');
+            setLeftoverQty('');
+            setLeftoverNote('');
+            setLeftoverPhoto(null);
+            setActiveModal('leftoverWaste');
+          }}
+          className="btn-touch w-full min-h-[68px] rounded-2xl bg-gradient-to-r from-purple-700 via-indigo-700 to-violet-800 hover:from-purple-800 hover:to-violet-900 text-white p-3 flex items-center justify-between shadow-md shadow-indigo-600/20 active:scale-[0.98] transition-all text-left cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2 rounded-xl bg-white/20 backdrop-blur-sm shrink-0">
+              <Trash2 className="h-5 w-5 text-purple-200" />
             </div>
             <div className="min-w-0">
-              <div className="font-extrabold text-xs leading-tight truncate">
+              <div className="flex items-center gap-1.5">
+                <span className="font-black text-xs sm:text-sm tracking-tight uppercase truncate">
+                  TỔNG HỢP MÓN DÙNG & ĐỒ ĂN CUỐI CA
+                </span>
+                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-purple-200 text-purple-900 uppercase shrink-0">
+                  Nút 5
+                </span>
+              </div>
+              <p className="text-[11px] text-purple-200 truncate mt-0.5">
+                Tổng hợp món dùng trong ngày & Chốt đồ ăn thừa cuối ca
+              </p>
+            </div>
+          </div>
+          <div className="p-1 rounded-lg bg-white/10 shrink-0">
+            <ArrowRight className="h-4 w-4 text-white" />
+          </div>
+        </button>
+
+        {/* XỬ LÝ MÓN TƯƠI CHỈ DÙNG TRONG NGÀY CUỐI CA */}
+        <div className="bg-gradient-to-r from-teal-700 via-emerald-700 to-teal-800 rounded-2xl p-2.5 text-white shadow-sm flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-1.5 rounded-xl bg-white/20 backdrop-blur-sm flex-shrink-0">
+              <Salad className="h-4 w-4 text-emerald-200" />
+            </div>
+            <div className="min-w-0">
+              <div className="font-extrabold text-[11px] leading-tight truncate">
                 MÓN DÙNG TRONG NGÀY
               </div>
               <p className="text-[10px] text-emerald-100/90 truncate">
-                Kiểm đếm tồn salad, kim chi cuối ca
+                Kiểm đếm salad, kim chi cuối ca
               </p>
             </div>
           </div>
           <button
             onClick={handleOpenDailyWasteModal}
-            className="btn-touch px-2.5 py-1.5 rounded-xl bg-white text-emerald-900 font-extrabold text-[11px] hover:bg-emerald-50 flex items-center gap-1 shadow-xs active:scale-95 transition-all flex-shrink-0 cursor-pointer"
+            className="btn-touch px-2 py-1 rounded-xl bg-white text-emerald-900 font-extrabold text-[10px] hover:bg-emerald-50 flex items-center gap-1 shadow-xs active:scale-95 transition-all flex-shrink-0 cursor-pointer"
           >
             <span>XỬ LÝ</span>
           </button>
@@ -1405,11 +1756,11 @@ export const KitchenModule: React.FC = () => {
                 <h3 className="font-extrabold text-sm sm:text-base text-slate-900 flex items-center gap-2">
                   <span>Quầy Buffet Ra Line (+1 Đĩa)</span>
                   <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full">
-                    Đối Soát CukCuk POS
+                    Kho Sau Chế Biến & CukCuk
                   </span>
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Ghi nhận số đĩa ra line phục vụ khách, không trừ tồn kho vật lý.
+                  Khấu trừ tức thời tồn Kho Sau Chế Biến & đối soát bán lẻ CukCuk POS.
                 </p>
               </div>
             </div>
@@ -1462,23 +1813,32 @@ export const KitchenModule: React.FC = () => {
 
           {/* Grid các món ăn ra line (2 - 3 cột tuỳ chiều ngang) */}
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5 overflow-y-auto max-h-[calc(100vh-320px)] pr-1">
-            {filterItemsByStation(items, selectedStation)
-              .filter(
-                (it) =>
-                  it.itemName.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
-                  it.itemCode.toLowerCase().includes(lineSearchTerm.toLowerCase())
-              )
-              .map((item) => {
-                const isLoadingBtn = !!loadingLineButtons[item.id];
-                const isCooldown = !!cooldownButtons[item.id];
+            {(processedDishes.length > 0 ? processedDishes : (items as any[]))
+              .filter((it: any) => {
+                const name = it.dishName || it.itemName || '';
+                const code = it.dishCode || it.itemCode || '';
+                return (
+                  name.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
+                  code.toLowerCase().includes(lineSearchTerm.toLowerCase())
+                );
+              })
+              .map((item: any) => {
+                const isDish = 'dishCode' in item;
+                const itemId = item.id;
+                const isLoadingBtn = !!loadingLineButtons[itemId];
+                const isCooldown = !!cooldownButtons[itemId];
                 const isLocked = isLoadingBtn || isCooldown;
-                const countToday = lineCounters[item.id] || 0;
-                const isAnimating = animatingLineItemId === item.id;
-                const isShaking = shakingLineItemId === item.id;
+                const countToday = lineCounters[itemId] || 0;
+                const isAnimating = animatingLineItemId === itemId;
+                const isShaking = shakingLineItemId === itemId;
+                const currentStock = isDish ? (item.quantity ?? 0) : 10;
+                const isOutOfStock = currentStock <= 0;
+                const name = item.dishName || item.itemName;
+                const unit = item.unit || 'đĩa';
 
                 return (
                   <div
-                    key={item.id}
+                    key={itemId}
                     className={`relative p-3 rounded-xl bg-white border border-slate-200 shadow-xs flex items-center justify-between gap-2 overflow-hidden transition-all ${
                       isShaking ? 'ring-2 ring-amber-400 animate-haptic-shake' : 'hover:border-amber-300'
                     }`}
@@ -1486,14 +1846,25 @@ export const KitchenModule: React.FC = () => {
                     {isAnimating && (
                       <div className="absolute top-1 right-2 px-2.5 py-0.5 rounded-full bg-emerald-600 text-white font-black text-[10px] shadow-lg animate-float-up flex items-center gap-1 z-20 pointer-events-none">
                         <Check className="h-3 w-3" />
-                        <span>+1 {item.unit}!</span>
+                        <span>+1 {unit}!</span>
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="font-bold text-xs sm:text-sm text-slate-900 truncate" title={item.itemName}>
-                        {item.itemName}
+                      <div className="font-bold text-xs sm:text-sm text-slate-900 truncate" title={name}>
+                        {name}
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
+                      <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] font-semibold text-slate-600">Kho sau:</span>
+                        <span
+                          className={`font-mono font-black ${
+                            isOutOfStock
+                              ? 'text-rose-600 bg-rose-50 px-1 py-0.2 rounded border border-rose-200'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {currentStock} {unit}
+                        </span>
+                        <span className="text-slate-300">•</span>
                         <span>Đã ra:</span>
                         <span
                           className={`font-mono font-black ${
@@ -1502,15 +1873,23 @@ export const KitchenModule: React.FC = () => {
                         >
                           {countToday}
                         </span>
-                        <span>{item.unit}</span>
+                        <span>{unit}</span>
                       </div>
+                      {isOutOfStock && (
+                        <div className="text-[10px] font-bold text-rose-700 mt-0.5 flex items-center gap-0.5">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span>Hết kho sau chế biến (Cần Nút 2)</span>
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
                       onClick={() => handleLineItemInc(item)}
-                      disabled={isLocked}
+                      disabled={isLocked || isOutOfStock}
                       className={`px-3 py-2 rounded-xl text-white font-black text-xs flex items-center gap-1 shadow-sm active:scale-95 transition-all shrink-0 ${
-                        isLocked
+                        isOutOfStock
+                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                          : isLocked
                           ? 'bg-amber-300 cursor-not-allowed opacity-80'
                           : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 shadow-amber-500/20 cursor-pointer'
                       }`}
@@ -1750,180 +2129,345 @@ export const KitchenModule: React.FC = () => {
       </div>
 
       {/* ============================================================== */}
-      {/* MODAL 1: LẤY HÀNG RA BẾP                                      */}
+      {/* MODAL 1: LẤY HÀNG THEO CÔNG THỨC & TẠO MẺ (KHO TRƯỚC CHẾ BIẾN)  */}
       {/* ============================================================== */}
       {activeModal === 'takeOut' && (() => {
-        const selectedTakeOutItem = items.find((i) => i.id === Number(selectedItemId));
-        const currentTakeOutQty = typeof takeOutQty === 'string' ? parseFloat(takeOutQty) : takeOutQty;
+        // Kiểm tra tồn kho khả dụng cho tất cả nguyên liệu trong công thức
         const isTakeOutOverStock = Boolean(
-          availableStock !== null &&
-          typeof currentTakeOutQty === 'number' &&
-          !isNaN(currentTakeOutQty) &&
-          currentTakeOutQty > availableStock
+          selectedDishRecipe?.ingredients.some((ing) => {
+            const avail = ingredientStockMap[ing.rawItemCode] ?? 50;
+            const curQty = ingredientQuantities[ing.rawItemCode] ?? ing.defaultQty;
+            return curQty > avail;
+          })
         );
-        const isTakeOutInvalid = !takeOutQty || isNaN(currentTakeOutQty) || currentTakeOutQty <= 0;
 
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
-            <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                <div className="flex items-center gap-2 text-blue-600 font-bold text-base">
-                  <Package className="h-6 w-6" />
-                  <span>NÚT 1: LẤY HÀNG RA BẾP</span>
+            <div className="bg-white w-full max-w-xl lg:max-w-3xl rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2 text-blue-700 font-black text-base">
+                  <Package className="h-6 w-6 text-blue-600" />
+                  <span>NÚT 1: LẤY HÀNG THEO CÔNG THỨC & TẠO MẺ TRƯỚC CHẾ BIẾN</span>
                 </div>
-                <button onClick={() => setActiveModal(null)} className="p-2 text-slate-400 hover:text-slate-600 cursor-pointer">
+                <button
+                  onClick={() => {
+                    setActiveModal(null);
+                    setTakeOutStep('selectDish');
+                    setSelectedDishRecipe(null);
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                >
                   <X className="h-5 w-5" />
                 </button>
               </div>
 
-              <form onSubmit={handleTakeOutSubmit} className="space-y-4 mt-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">MÓN ĂN / NGUYÊN LIỆU</label>
-                  <select
-                    value={selectedItemId}
-                    onChange={(e) => {
-                      const newId = Number(e.target.value);
-                      setSelectedItemId(newId);
-                      fetchAvailableStock(newId);
-                    }}
-                    className="w-full h-12 px-3 rounded-xl border border-slate-300 font-medium text-slate-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    {items.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.itemName} ({i.unit}) - [{i.barcode || i.itemCode}]
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* TASK-LOGIC-01: Nhãn trực quan tồn kho khả dụng hiện tại */}
-                  <div className="mt-2.5 px-3.5 py-2.5 rounded-xl bg-blue-50/90 border border-blue-200 flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-xs text-blue-900 font-semibold">
-                      <Package className="h-4 w-4 text-blue-600 shrink-0" />
-                      <span>Tồn kho khả dụng hiện tại:</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {isLoadingStock ? (
-                        <span className="flex items-center gap-1 text-xs text-blue-600 font-medium">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Đang kiểm tra...
-                        </span>
-                      ) : (
-                        <>
-                          <span className="font-mono font-black text-sm text-blue-700">
-                            {availableStock !== null ? availableStock.toFixed(2) : '0.00'}{' '}
-                            {selectedTakeOutItem?.unit || 'kg'}
-                          </span>
-                          {availableStock !== null && availableStock <= 0 && (
-                            <span className="text-[10px] font-bold text-rose-700 bg-rose-100 border border-rose-300 px-1.5 py-0.5 rounded">
-                              HẾT HÀNG
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-xs font-bold text-slate-600">SỐ LƯỢNG LẤY</label>
-                    <span className="text-xs font-semibold text-blue-600">
-                      Đơn vị: {selectedTakeOutItem?.unit || 'KG'}
+              {/* SCREEN 1: CHỌN MÓN ĂN TỪ DANH SÁCH DISH_RECIPES (8 MÓN BUFFET) */}
+              {takeOutStep === 'selectDish' && (
+                <div className="mt-4 space-y-4">
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-950 text-xs flex items-start gap-2">
+                    <Info className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Bước 1/2:</strong> Chọn món ăn cần chế biến từ danh mục công thức chuẩn Buffet Sen Việt. Hệ thống sẽ tự động liên kết danh sách nguyên liệu thô cần xuất từ <strong>Kho Trước Chế Biến</strong>.
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.001"
-                      placeholder="Nhập số lượng..."
-                      value={takeOutQty}
-                      onChange={(e) => {
-                        const val = e.target.value.replace(',', '.');
-                        setTakeOutQty(val === '' ? '' : parseFloat(val) || 0);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === ',') {
-                          e.preventDefault();
-                          const cur = String(takeOutQty ?? '');
-                          if (!cur.includes('.')) {
-                            setTakeOutQty(((cur ? cur : '0') + '.') as any);
-                          }
-                        }
-                      }}
-                      className={`flex-1 h-12 px-4 rounded-xl border font-extrabold text-xl transition-all ${
-                        isTakeOutOverStock
-                          ? 'border-rose-500 bg-rose-50 text-rose-900 ring-2 ring-rose-500 focus:outline-none focus:ring-rose-500'
-                          : 'border-slate-300 text-slate-900 focus:ring-2 focus:ring-blue-500'
-                      }`}
-                    />
-                    <div className="flex gap-1.5">
-                      {[5, 10, 20].map((inc) => (
-                        <button
-                          type="button"
-                          key={inc}
-                          onClick={() => setTakeOutQty(inc)}
-                          className="btn-touch px-3 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-xs text-slate-700"
-                        >
-                          {inc}
-                        </button>
-                      ))}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {DISH_RECIPES.map((recipe) => (
+                      <div
+                        key={recipe.id}
+                        onClick={() => {
+                          setSelectedDishRecipe(recipe);
+                          const initQuantities: { [code: string]: number } = {};
+                          recipe.ingredients.forEach((ing) => {
+                            initQuantities[ing.rawItemCode] = ing.defaultQty;
+                          });
+                          setIngredientQuantities(initQuantities);
+                          loadIngredientStocks(recipe);
+                          setRawBatchPhoto(null);
+                          setTakeOutStep('recipeIngredients');
+                        }}
+                        className="p-3.5 rounded-2xl border border-slate-200 hover:border-blue-500 hover:bg-blue-50/50 hover:shadow-md transition-all cursor-pointer group flex flex-col justify-between"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <span className="text-3xl p-1.5 rounded-xl bg-slate-100 group-hover:bg-white transition-colors">
+                              {recipe.icon}
+                            </span>
+                            <div>
+                              <h4 className="font-black text-sm text-slate-900 group-hover:text-blue-700 transition-colors">
+                                {recipe.dishName}
+                              </h4>
+                              <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full inline-block mt-0.5">
+                                {recipe.category}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-xs font-mono font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg shrink-0">
+                            ~{recipe.yieldPlatesDefault} đĩa
+                          </span>
+                        </div>
+
+                        <div className="mt-3 pt-2.5 border-t border-slate-100 text-[11px] text-slate-500 flex items-center justify-between">
+                          <span>
+                            {recipe.ingredients.length} nguyên liệu ({recipe.ingredients[0].rawItemName})
+                          </span>
+                          <span className="font-bold text-blue-600 flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                            Chọn món <ArrowRight className="h-3.5 w-3.5" />
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* SCREEN 2: BUNG RA DANH SÁCH NGUYÊN LIỆU CÔNG THỨC & ẢNH TRƯỚC CHẾ BIẾN */}
+              {takeOutStep === 'recipeIngredients' && selectedDishRecipe && (
+                <div className="mt-4 space-y-4">
+                  {/* Selected Dish Banner */}
+                  <div className="p-3 rounded-2xl bg-gradient-to-r from-blue-700 to-indigo-800 text-white flex items-center justify-between shadow-md">
+                    <div className="flex items-center gap-3">
+                      <span className="text-3xl p-1 bg-white/20 rounded-xl">{selectedDishRecipe.icon}</span>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-base leading-tight">{selectedDishRecipe.dishName}</h4>
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-white/20">
+                            {selectedDishRecipe.category}
+                          </span>
+                        </div>
+                        <p className="text-xs text-blue-100 mt-0.5">
+                          Định mức chuẩn: {selectedDishRecipe.yieldPlatesDefault} đĩa (~{(selectedDishRecipe.standardPortionWeight * selectedDishRecipe.yieldPlatesDefault).toFixed(1)} kg thành phẩm)
+                        </p>
+                      </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setTakeOutStep('selectDish')}
+                      className="px-2.5 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-xs font-bold transition-all shrink-0 cursor-pointer flex items-center gap-1"
+                    >
+                      <Undo2 className="h-3.5 w-3.5" />
+                      <span>Đổi món</span>
+                    </button>
                   </div>
 
-                  {/* Cảnh báo đỏ khi vượt tồn kho khả dụng */}
-                  {isTakeOutOverStock && (
-                    <div className="mt-2 p-2.5 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-2 text-xs font-bold text-rose-700 animate-in fade-in">
-                      <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
-                      <span>
-                        ⚠️ Số lượng yêu cầu ({currentTakeOutQty} {selectedTakeOutItem?.unit || 'kg'}) vượt quá tồn kho khả dụng ({availableStock?.toFixed(2)} {selectedTakeOutItem?.unit || 'kg'}). Vui lòng kiểm tra lại!
-                      </span>
+                  {/* Danh sách nguyên liệu theo công thức */}
+                  <div className="space-y-2.5">
+                    <label className="block text-xs font-black text-slate-700 uppercase tracking-wide">
+                      DANH SÁCH NGUYÊN LIỆU XUẤT NẤU (KHO TRƯỚC CHẾ BIẾN)
+                    </label>
+
+                    {selectedDishRecipe.ingredients.map((ing) => {
+                      const avail = ingredientStockMap[ing.rawItemCode] ?? 50;
+                      const curQty = ingredientQuantities[ing.rawItemCode] ?? ing.defaultQty;
+                      const isOver = curQty > avail;
+
+                      return (
+                        <div
+                          key={ing.rawItemCode}
+                          className={`p-3 rounded-2xl border transition-all ${
+                            isOver ? 'bg-rose-50/60 border-rose-300' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-black text-xs sm:text-sm text-slate-800 truncate">
+                                {ing.rawItemName}
+                              </span>
+                              {ing.isPrimary ? (
+                                <span className="px-2 py-0.5 text-[10px] font-black rounded-md bg-amber-100 text-amber-800 border border-amber-300 shrink-0">
+                                  ⭐ Chủ lực mẻ
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 text-[9px] font-bold rounded bg-slate-200 text-slate-700 shrink-0">
+                                  Gia vị / Phụ liệu
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs font-bold text-slate-500 shrink-0">
+                              Mã: <code className="text-blue-700 font-mono">{ing.rawItemCode}</code>
+                            </span>
+                          </div>
+
+                          {/* Nhãn trực quan tồn kho khả dụng hiện tại */}
+                          <div className="text-[11px] text-slate-500 mb-2 flex items-center justify-between">
+                            <span>
+                              Tồn kho khả dụng hiện tại: <strong className="font-mono text-slate-800">{avail.toFixed(2)} {ing.unit}</strong>
+                            </span>
+                            <span className="text-slate-400">Định mức công thức: {ing.defaultQty} {ing.unit}</span>
+                          </div>
+
+                          {/* Input số lượng thực tế lấy đi nấu */}
+                          <div className="flex items-center gap-2">
+                            <div className="relative flex-1">
+                              <input
+                                type="number"
+                                step="any"
+                                min="0"
+                                value={curQty}
+                                onChange={(e) => {
+                                  const val = parseFloat(e.target.value.replace(',', '.')) || 0;
+                                  setIngredientQuantities({
+                                    ...ingredientQuantities,
+                                    [ing.rawItemCode]: val,
+                                  });
+                                }}
+                                className={`w-full h-11 px-3 rounded-xl border font-black text-base transition-all ${
+                                  isOver
+                                    ? 'border-rose-500 bg-rose-50 text-rose-900 ring-2 ring-rose-500 focus:outline-none focus:ring-rose-500'
+                                    : 'border-slate-300 bg-white text-slate-900 focus:ring-2 focus:ring-blue-500'
+                                }`}
+                              />
+                              <span className="absolute right-3 top-2.5 text-xs font-bold text-slate-400 pointer-events-none">
+                                {ing.unit}
+                              </span>
+                            </div>
+
+                            <div className="flex gap-1 shrink-0">
+                              {[-1, 1, 5].map((delta) => (
+                                <button
+                                  type="button"
+                                  key={delta}
+                                  onClick={() => {
+                                    const next = Math.max(0, Number((curQty + delta).toFixed(2)));
+                                    setIngredientQuantities({
+                                      ...ingredientQuantities,
+                                      [ing.rawItemCode]: next,
+                                    });
+                                  }}
+                                  className="btn-touch px-2 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 text-xs font-bold text-slate-700"
+                                >
+                                  {delta > 0 ? `+${delta}` : delta}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {isOver && (
+                            <div className="mt-1.5 p-2 rounded-lg bg-rose-100/80 border border-rose-300 text-rose-800 text-[11px] font-bold flex items-center gap-1.5">
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-600" />
+                              <span>
+                                ⚠️ Số lượng yêu cầu ({curQty} {ing.unit}) vượt quá tồn kho khả dụng ({avail.toFixed(2)} {ing.unit}). Vui lòng kiểm tra lại!
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* BẮT BUỘC CHỤP / UPLOAD ẢNH MẺ TRƯỚC CHẾ BIẾN */}
+                  <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-black text-amber-950 uppercase flex items-center gap-1.5">
+                        <Camera className="h-4 w-4 text-amber-700" />
+                        <span>ẢNH BÀN CÂN / KHAY NGUYÊN LIỆU THÔ TRƯỚC CHẾ BIẾN (BẮT BUỘC)</span>
+                      </label>
+                      {rawBatchPhoto && (
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-300">
+                          ✓ Đã nén: {Math.round(rawBatchPhoto.compressedSizeKb)}KB
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">GHI CHÚ (TÙY CHỌN)</label>
-                  <input
-                    type="text"
-                    placeholder="Ví dụ: Xuất sơ chế ca trưa..."
-                    value={takeOutNote}
-                    onChange={(e) => setTakeOutNote(e.target.value)}
-                    className="w-full h-11 px-3 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+                    <p className="text-[11px] text-amber-900/80 leading-relaxed">
+                      Nhân viên bếp chụp ảnh khay/bàn cân nguyên liệu thô trước khi cho vào nấu để làm bằng chứng đối soát và chống thất thoát.
+                    </p>
 
-                <div className="pt-2">
-                  <button
-                    type="submit"
-                    disabled={isTakingOut || isTakeOutInvalid || isTakeOutOverStock || (availableStock !== null && availableStock <= 0)}
-                    className="btn-touch w-full h-14 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed disabled:text-slate-500 disabled:shadow-none text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer"
-                  >
-                    {isTakingOut ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      ref={rawPhotoInputRef}
+                      onChange={handleRawBatchPhotoUpload}
+                      className="hidden"
+                    />
+
+                    {!rawBatchPhoto ? (
+                      <div
+                        onClick={() => rawPhotoInputRef.current?.click()}
+                        className="p-5 rounded-xl border-2 border-dashed border-amber-300 bg-white hover:bg-amber-50/50 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
+                      >
+                        {isCompressingRawPhoto ? (
+                          <div className="flex flex-col items-center gap-1.5 py-1">
+                            <Loader2 className="h-6 w-6 animate-spin text-amber-600" />
+                            <span className="text-xs font-bold text-amber-900">Đang nén ảnh & chèn Watermark...</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="p-2.5 rounded-full bg-amber-100 text-amber-700">
+                              <Camera className="h-6 w-6" />
+                            </div>
+                            <span className="text-xs font-black text-amber-900 uppercase">
+                              Bấm để Chụp / Chọn Ảnh Khay Bàn Cân (*)
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              Hệ thống tự động nén &lt; 250KB và đóng dấu thời gian, bếp viên
+                            </span>
+                          </>
+                        )}
+                      </div>
                     ) : (
-                      <>
-                        <CheckCircle2 className="h-5 w-5" />
-                        <span>XÁC NHẬN LẤY HÀNG</span>
-                      </>
+                      <div className="relative rounded-xl overflow-hidden border border-amber-300 bg-slate-900 aspect-video max-h-52 flex items-center justify-center group">
+                        <img
+                          src={rawBatchPhoto.dataUrl}
+                          alt="Ảnh mẻ trước chế biến"
+                          className="w-full h-full object-contain"
+                        />
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => rawPhotoInputRef.current?.click()}
+                            className="p-2 rounded-lg bg-amber-600 text-white text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
+                          >
+                            <Camera className="w-4 h-4" /> Chụp lại
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRawBatchPhoto(null)}
+                            className="p-2 rounded-lg bg-rose-600 text-white text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" /> Xóa
+                          </button>
+                        </div>
+                      </div>
                     )}
-                  </button>
+                  </div>
+
+                  {/* Nút hành động Xác nhận Tạo Mẻ & Lấy Hàng */}
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleTakeOutAndStartBatch}
+                      disabled={isTakingOut || !rawBatchPhoto || isTakeOutOverStock}
+                      className="btn-touch w-full h-14 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all cursor-pointer"
+                    >
+                      {isTakingOut ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-5 w-5" />
+                          <span>XÁC NHẬN TẠO MẺ & LẤY HÀNG</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
-              </form>
+              )}
             </div>
           </div>
         );
       })()}
 
       {/* ============================================================== */}
-      {/* MODAL 2: CHẾ BIẾN MẺ & CÂN THÀNH PHẨM (SPLIT-VIEW PC - TASK-PC-06) */}
+      {/* MODAL 2: CÂN THÀNH PHẨM MẺ DỞ DANG & NHẬP KHO SAU CHẾ BIẾN    */}
       {/* ============================================================== */}
       {activeModal === 'batch' && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
           <div className="bg-white w-full max-w-lg lg:max-w-5xl xl:max-w-6xl rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2 text-emerald-600 font-bold text-base">
-                <Flame className="h-6 w-6" />
-                <span>NÚT 2: CHẾ BIẾN MẺ & CÂN HAO HỤT THÀNH PHẨM</span>
+                <Scale className="h-6 w-6 text-emerald-600" />
+                <span>NÚT 2: CÂN THÀNH PHẨM MẺ DỞ DANG & NHẬP KHO SAU CHẾ BIẾN</span>
               </div>
               <button
                 onClick={() => setActiveModal(null)}
@@ -1934,340 +2478,259 @@ export const KitchenModule: React.FC = () => {
               </button>
             </div>
 
-            {/* Tab Chọn: Mở mẻ mới HOẶC Cân thành phẩm */}
-            <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl mt-4">
-              <button
-                onClick={() => setBatchTab('start')}
-                className={`btn-touch py-2 rounded-lg text-xs font-bold transition-all ${
-                  batchTab === 'start' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                1. Mở Mẻ Mới
-              </button>
-              <button
-                onClick={() => setBatchTab('finish')}
-                className={`btn-touch py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                  batchTab === 'finish' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Scale className="h-3.5 w-3.5" />
-                <span>2. Cân Thành Phẩm ({activeBatches.length})</span>
-              </button>
-            </div>
-
-            {/* TAB 1: MỞ MẺ MỚI (SPLIT-VIEW 2 CỘT TRÊN PC) */}
-            {batchTab === 'start' && (
+            {/* NÚT 2 CHỈ LÀM MỘT VIỆC: CÂN THÀNH PHẨM MẺ ĐANG LÀM DỞ DANG */}
+            {activeBatches.length === 0 ? (
+              <div className="text-center py-12 text-slate-500">
+                <CheckCircle2 className="h-12 w-12 text-emerald-500 mx-auto mb-3 opacity-60" />
+                <h4 className="text-base font-black text-slate-800">Hiện không có mẻ nào đang làm dở dang</h4>
+                <p className="text-xs text-slate-500 mt-1">
+                  Vui lòng bấm <strong>Nút 1 (Lấy Hàng Theo Công Thức)</strong> để mở mẻ chế biến trước khi cân thành phẩm.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveModal('takeOut');
+                    setTakeOutStep('selectDish');
+                    setSelectedDishRecipe(null);
+                  }}
+                  className="mt-4 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-md cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <Package className="h-4 w-4" />
+                  <span>Sang Nút 1: Lấy Hàng Theo Công Thức</span>
+                </button>
+              </div>
+            ) : (
               <div className="lg:grid lg:grid-cols-12 lg:gap-6 mt-4">
-                {/* Cột trái (60%): Form nhập liệu */}
+                {/* Cột trái (60%): Chọn mẻ & nhập khối lượng + số lượng đĩa thành phẩm */}
                 <div className="lg:col-span-7 space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-600 mb-1">MÓN CHẾ BIẾN</label>
-                    <select
-                      value={batchItemId}
-                      onChange={(e) => setBatchItemId(Number(e.target.value))}
-                      className="w-full h-12 px-3 rounded-xl border border-slate-300 font-medium text-slate-800 focus:ring-2 focus:ring-emerald-500"
-                    >
-                      {items.map((i) => (
-                        <option key={i.id} value={i.id}>
-                          {i.itemName}
-                        </option>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">CHỌN MẺ CẦN CÂN THÀNH PHẨM</label>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {activeBatches.map((b) => (
+                        <div
+                          key={b.id}
+                          onClick={() => {
+                            setSelectedFinishBatch(b);
+                            setFinishScalePhoto(null);
+                            const rec = DISH_RECIPES.find((r) => r.dishCode === b.itemCode || r.dishName === b.itemName);
+                            setFinishOutputPlates(rec ? rec.yieldPlatesDefault : 20);
+                            const savedDraft = localStorage.getItem(`senviet_offline_finish_batch_${b.id}`);
+                            if (savedDraft) {
+                              try {
+                                const parsed = JSON.parse(savedDraft);
+                                if (parsed.weight) setFinishOutputWeight(parsed.weight);
+                                if (parsed.photo) setFinishScalePhoto(parsed.photo);
+                                if (parsed.plates) setFinishOutputPlates(parsed.plates);
+                                showNotice('success', `Đã khôi phục số cân lưu tạm: ${parsed.weight} kg`);
+                              } catch {
+                                setFinishOutputWeight(parseFloat(savedDraft) || 0);
+                              }
+                            } else {
+                              setFinishOutputWeight(0);
+                            }
+                          }}
+                          className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                            selectedFinishBatch?.id === b.id
+                              ? 'bg-emerald-50 border-emerald-500 shadow-sm'
+                              : 'bg-white border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-sm text-slate-800">{b.itemName}</span>
+                            <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
+                              {b.batchCode}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
+                            <span>Khối lượng đầu vào: <strong className="text-slate-800">{b.inputWeight} kg</strong></span>
+                            <span className="text-slate-400 font-mono text-[11px]">{b.startedAt}</span>
+                          </div>
+                        </div>
                       ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold text-slate-700">KHỐI LƯỢNG NGUYÊN LIỆU ĐẦU VÀO (KG)</label>
-                      <span className="text-xs font-semibold text-emerald-600">
-                        Đang nhập: <strong className="text-base text-slate-900 font-mono">{batchInputWeight}</strong> kg
-                      </span>
-                    </div>
-                    <VirtualNumpad
-                      value={batchInputWeight}
-                      onChange={(val) => setBatchInputWeight(val)}
-                      unit="kg"
-                      quickAddValues={[1, 5, 10]}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 mb-1">GHI CHÚ MẺ</label>
-                    <input
-                      type="text"
-                      placeholder="Ví dụ: Cua hấp bia sả ca trưa..."
-                      value={batchNote}
-                      onChange={(e) => setBatchNote(e.target.value)}
-                      className="w-full h-11 px-3 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-emerald-500"
-                    >
-                    </input>
-                  </div>
-
-                  <div className="pt-2">
-                    <button
-                      onClick={() => handleStartBatchSubmit(false)}
-                      disabled={isStartingBatch}
-                      className="btn-touch w-full h-14 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-400 text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
-                    >
-                      {isStartingBatch ? (
-                        <Loader2 className="h-5 w-5 animate-spin" />
-                      ) : (
-                        <>
-                          <Flame className="h-5 w-5" />
-                          <span>BẮT ĐẦU CHẾ BIẾN MẺ</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Cột phải (40%): Định mức & Quy định an toàn bếp */}
-                <div className="hidden lg:flex lg:col-span-5 flex-col space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                  <div className="flex items-center gap-2 text-emerald-800 font-bold text-sm border-b border-slate-200 pb-2">
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                    <span>Định Mức Hao Hụt Tiêu Chuẩn Chuỗi</span>
-                  </div>
-                  <div className="space-y-2 text-xs">
-                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 flex items-center justify-between">
-                      <span className="font-semibold text-slate-800">🦀 Cua thịt Cà Mau / Cua gạch:</span>
-                      <span className="font-mono font-bold text-emerald-700">&le; 3.8%</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 flex items-center justify-between">
-                      <span className="font-semibold text-slate-800">🦀 Ghẹ xanh Nghệ An / Ghẹ tươi:</span>
-                      <span className="font-mono font-bold text-emerald-700">&le; 4.2%</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 flex items-center justify-between">
-                      <span className="font-semibold text-slate-800">🦐 Bề bề, Tôm thẻ, Mực trứng:</span>
-                      <span className="font-mono font-bold text-emerald-700">&le; 5.0%</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-white border border-slate-200 flex items-center justify-between">
-                      <span className="font-semibold text-slate-800">🥩 Ba chỉ bò Mỹ, Dẻ sườn nướng:</span>
-                      <span className="font-mono font-bold text-emerald-700">&le; 6.5%</span>
                     </div>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs space-y-1">
-                    <span className="font-bold flex items-center gap-1 text-amber-800">
-                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                      Quy Tắc Vận Hành Chống Thất Thoát
-                    </span>
-                    <p className="text-[11px] text-slate-600 leading-relaxed">
-                      1. Cân khối lượng đầu vào trước khi mở mẻ.<br/>
-                      2. Hoàn thành mẻ bắt buộc cân thành phẩm ngay trước khi mở mẻ mới.<br/>
-                      3. Bắt buộc chụp ảnh mặt bàn cân hiển thị rõ số kg.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 2: CÂN THÀNH PHẨM (SPLIT-VIEW 2 CỘT TRÊN PC) */}
-            {batchTab === 'finish' && (
-              <div>
-                {activeBatches.length === 0 ? (
-                  <div className="text-center py-8 text-slate-500">
-                    <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto mb-2 opacity-50" />
-                    <p className="text-sm font-medium">Hiện không có mẻ nào đang làm dở dang</p>
-                    <button
-                      onClick={() => setBatchTab('start')}
-                      className="mt-3 px-4 py-2 rounded-lg bg-emerald-100 text-emerald-700 text-xs font-bold"
-                    >
-                      Mở mẻ chế biến mới
-                    </button>
-                  </div>
-                ) : (
-                  <div className="lg:grid lg:grid-cols-12 lg:gap-6 mt-4">
-                    {/* Cột trái (60%): Chọn mẻ & nhập khối lượng thành phẩm */}
-                    <div className="lg:col-span-7 space-y-4">
+                  {selectedFinishBatch && (
+                    <div className="space-y-4">
+                      {/* Khối lượng thành phẩm */}
                       <div>
-                        <label className="block text-xs font-bold text-slate-600 mb-1">CHỌN MẺ CẦN CÂN THÀNH PHẨM</label>
-                        <div className="space-y-2 max-h-40 overflow-y-auto">
-                          {activeBatches.map((b) => (
-                            <div
-                              key={b.id}
-                              onClick={() => {
-                                setSelectedFinishBatch(b);
-                                setFinishScalePhoto(null);
-                                const savedDraft = localStorage.getItem(`senviet_offline_finish_batch_${b.id}`);
-                                if (savedDraft) {
-                                  try {
-                                    const parsed = JSON.parse(savedDraft);
-                                    if (parsed.weight) setFinishOutputWeight(parsed.weight);
-                                    if (parsed.photo) setFinishScalePhoto(parsed.photo);
-                                    showNotice('success', `Đã khôi phục số cân lưu tạm: ${parsed.weight} kg kèm ảnh`);
-                                  } catch {
-                                    setFinishOutputWeight(parseFloat(savedDraft) || 0);
-                                    showNotice('success', `Đã khôi phục số cân lưu tạm: ${savedDraft} kg`);
-                                  }
-                                } else {
-                                  setFinishOutputWeight(0);
-                                }
-                              }}
-                              className={`p-3 rounded-xl border cursor-pointer transition-all ${
-                                selectedFinishBatch?.id === b.id
-                                  ? 'bg-emerald-50 border-emerald-500 shadow-sm'
-                                  : 'bg-white border-slate-200 hover:border-slate-300'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="font-bold text-sm text-slate-800">{b.itemName}</span>
-                                <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">
-                                  {b.batchCode}
-                                </span>
-                              </div>
-                              <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
-                                <span>Khối lượng đầu vào: <strong className="text-slate-800">{b.inputWeight} kg</strong></span>
-                              </div>
-                            </div>
-                          ))}
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-bold text-slate-700 uppercase">
+                            KHỐI LƯỢNG THÀNH PHẨM CÂN ĐƯỢC (KG)
+                          </label>
+                          <span className="text-xs text-slate-500">
+                            Đang cân: <strong className="text-base text-slate-900 font-mono">{finishOutputWeight}</strong> / {selectedFinishBatch.inputWeight} kg
+                          </span>
+                        </div>
+                        <VirtualNumpad
+                          value={finishOutputWeight}
+                          onChange={(val) => setFinishOutputWeight(val)}
+                          unit="kg"
+                          quickAddValues={[1, 5, 10]}
+                          max={selectedFinishBatch.inputWeight}
+                        />
+                      </div>
+
+                      {/* Số lượng đĩa thành phẩm hoàn tất (Cộng vào Kho Sau Chế Biến) */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-xs font-bold text-slate-700 uppercase">
+                            SỐ LƯỢNG ĐĨA THÀNH PHẨM (ĐĨA)
+                          </label>
+                          <span className="text-xs font-semibold text-emerald-700">
+                            Tự động cộng (+) vào Kho Sau Chế Biến
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={finishOutputPlates}
+                            onChange={(e) => setFinishOutputPlates(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="flex-1 h-12 px-4 rounded-xl border border-slate-300 font-black text-xl text-slate-900 focus:ring-2 focus:ring-emerald-500"
+                          />
+                          <div className="flex gap-1">
+                            {[-5, -1, 1, 5].map((delta) => (
+                              <button
+                                type="button"
+                                key={delta}
+                                onClick={() => setFinishOutputPlates((prev) => Math.max(1, prev + delta))}
+                                className="btn-touch px-2.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700"
+                              >
+                                {delta > 0 ? `+${delta}` : delta}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       </div>
 
-                      {selectedFinishBatch && (
-                        <div className="space-y-4">
+                      {/* Phân tích hao hụt realtime */}
+                      {finishOutputWeight > 0 && selectedFinishBatch.inputWeight && (
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center justify-between">
                           <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="block text-xs font-bold text-slate-700">KHỐI LƯỢNG THÀNH PHẨM CÂN ĐƯỢC (KG)</label>
-                              <span className="text-xs text-slate-500">
-                                Đang cân: <strong className="text-base text-slate-900 font-mono">{finishOutputWeight}</strong> / {selectedFinishBatch.inputWeight} kg
-                              </span>
-                            </div>
-                            <VirtualNumpad
-                              value={finishOutputWeight}
-                              onChange={(val) => setFinishOutputWeight(val)}
-                              unit="kg"
-                              quickAddValues={[1, 5, 10]}
-                              max={selectedFinishBatch.inputWeight}
-                            />
+                            <span className="text-slate-500 block">Tỷ lệ hao hụt thực tế:</span>
+                            <span className="font-mono font-black text-sm text-slate-900">
+                              {(((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100).toFixed(1)}%
+                            </span>
+                            <span className="text-slate-400 ml-1">
+                              (-{(selectedFinishBatch.inputWeight - finishOutputWeight).toFixed(2)} kg)
+                            </span>
                           </div>
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                            ((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100 <= 5.0
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100 <= 5.0
+                              ? '✓ Trong định mức'
+                              : '⚠️ Vượt định mức'}
+                          </span>
+                        </div>
+                      )}
 
-                          {/* Phân tích hao hụt realtime */}
-                          {finishOutputWeight > 0 && selectedFinishBatch.inputWeight && (
-                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center justify-between">
-                              <div>
-                                <span className="text-slate-500 block">Tỷ lệ hao hụt thực tế:</span>
-                                <span className="font-mono font-black text-sm text-slate-900">
-                                  {(((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100).toFixed(1)}%
-                                </span>
-                                <span className="text-slate-400 ml-1">
-                                  (-{(selectedFinishBatch.inputWeight - finishOutputWeight).toFixed(2)} kg)
-                                </span>
-                              </div>
-                              <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                                ((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100 <= 5.0
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-rose-100 text-rose-800'
-                              }`}>
-                                {((selectedFinishBatch.inputWeight - finishOutputWeight) / selectedFinishBatch.inputWeight) * 100 <= 5.0
-                                  ? '✓ Trong định mức'
-                                  : '⚠️ Vượt định mức'}
-                              </span>
-                            </div>
-                          )}
+                      <button
+                        onClick={handleFinishBatchSubmit}
+                        disabled={isFinishingBatch || finishOutputWeight <= 0 || !finishScalePhoto || finishOutputPlates <= 0}
+                        className="btn-touch w-full h-14 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+                      >
+                        {isFinishingBatch ? (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        ) : (
+                          <>
+                            <Scale className="h-5 w-5" />
+                            <span>XÁC NHẬN HOÀN TẤT & NHẬP KHO SAU CHẾ BIẾN (+{finishOutputPlates} ĐĨA)</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
 
+                {/* Cột phải (40%): Khung chụp ảnh mặt bàn cân điện tử cỡ lớn */}
+                <div className="lg:col-span-5 space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                      <Camera className="w-4 h-4 text-emerald-600" />
+                      <span>ẢNH BÀN CÂN ĐIỆN TỬ</span>
+                      <span className="text-rose-600 font-black">(*)</span>
+                    </label>
+                    <span className="text-[11px] font-bold text-slate-400">Chống gian lận</span>
+                  </div>
+
+                  <input
+                    ref={finishScalePhotoInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleFinishScalePhotoUpload}
+                    className="hidden"
+                  />
+
+                  {finishScalePhoto ? (
+                    <div className="space-y-2">
+                      <div className="relative rounded-xl overflow-hidden border border-emerald-400 bg-slate-950 aspect-video max-h-64 flex items-center justify-center group">
+                        <img
+                          src={finishScalePhoto}
+                          alt="Mặt bàn cân điện tử"
+                          className="w-full h-full object-contain"
+                        />
+                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                           <button
-                            onClick={handleFinishBatchSubmit}
-                            disabled={isFinishingBatch || finishOutputWeight <= 0 || !finishScalePhoto}
-                            className="btn-touch w-full h-14 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 transition-all cursor-pointer"
+                            type="button"
+                            onClick={() => setPreviewScalePhoto(finishScalePhoto)}
+                            className="p-2 rounded-lg bg-white/90 text-slate-800 text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
                           >
-                            {isFinishingBatch ? (
-                              <Loader2 className="h-5 w-5 animate-spin" />
-                            ) : (
-                              <>
-                                <Scale className="h-5 w-5" />
-                                <span>XÁC NHẬN HOÀN TẤT CÂN MẺ</span>
-                              </>
-                            )}
+                            <ZoomIn className="w-4 h-4" /> Soi cận cảnh
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => finishScalePhotoInputRef.current?.click()}
+                            className="p-2 rounded-lg bg-emerald-600 text-white text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
+                          >
+                            <Camera className="w-4 h-4" /> Chụp lại
                           </button>
                         </div>
-                      )}
-                    </div>
-
-                    {/* Cột phải (40%): Khung chụp ảnh mặt bàn cân điện tử cỡ lớn */}
-                    <div className="lg:col-span-5 space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                      <div className="flex items-center justify-between">
-                        <label className="block text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <Camera className="w-4 h-4 text-emerald-600" />
-                          <span>ẢNH BÀN CÂN ĐIỆN TỬ</span>
-                          <span className="text-rose-600 font-black">(*)</span>
-                        </label>
-                        <span className="text-[11px] font-bold text-slate-400">Chống gian lận</span>
                       </div>
-
-                      <input
-                        ref={finishScalePhotoInputRef}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        onChange={handleFinishScalePhotoUpload}
-                        className="hidden"
-                      />
-
-                      {finishScalePhoto ? (
-                        <div className="space-y-2">
-                          <div className="relative rounded-xl overflow-hidden border border-emerald-400 bg-slate-950 aspect-video max-h-64 flex items-center justify-center group">
-                            <img
-                              src={finishScalePhoto}
-                              alt="Mặt bàn cân điện tử"
-                              className="w-full h-full object-contain"
-                            />
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setPreviewScalePhoto(finishScalePhoto)}
-                                className="p-2 rounded-lg bg-white/90 text-slate-800 text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
-                              >
-                                <ZoomIn className="w-4 h-4" /> Soi cận cảnh
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => finishScalePhotoInputRef.current?.click()}
-                                className="p-2 rounded-lg bg-emerald-600 text-white text-xs font-bold flex items-center gap-1 shadow cursor-pointer"
-                              >
-                                <Camera className="w-4 h-4" /> Chụp lại
-                              </button>
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                              <CheckCircle2 className="w-4 h-4" /> Đã có Watermark xác thực
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => setFinishScalePhoto(null)}
-                              className="text-rose-600 hover:text-rose-800 font-bold cursor-pointer"
-                            >
-                              Xóa ảnh
-                            </button>
-                          </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="w-4 h-4" /> Đã có Watermark xác thực
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setFinishScalePhoto(null)}
+                          className="text-rose-600 hover:text-rose-800 font-bold cursor-pointer"
+                        >
+                          Xóa ảnh
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-6">
+                      {isCompressingScalePhoto ? (
+                        <div className="flex flex-col items-center justify-center gap-2 text-emerald-700 py-4">
+                          <Loader2 className="w-6 h-6 animate-spin" />
+                          <span className="text-xs font-bold">Đang nén ảnh & đóng dấu Watermark...</span>
                         </div>
                       ) : (
-                        <div className="text-center py-6">
-                          {isCompressingScalePhoto ? (
-                            <div className="flex flex-col items-center justify-center gap-2 text-emerald-700 py-4">
-                              <Loader2 className="w-6 h-6 animate-spin" />
-                              <span className="text-xs font-bold">Đang nén ảnh & đóng dấu Watermark...</span>
-                            </div>
-                          ) : (
-                            <div className="space-y-3">
-                              <button
-                                type="button"
-                                onClick={() => finishScalePhotoInputRef.current?.click()}
-                                className="w-full py-6 px-4 rounded-xl bg-white hover:bg-emerald-50 border-2 border-dashed border-emerald-500 text-emerald-700 font-bold text-sm flex flex-col items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
-                              >
-                                <Camera className="w-8 h-8 text-emerald-600" />
-                                <span>CHỤP ẢNH MẶT BÀN CÂN ĐIỆN TỬ (*)</span>
-                                <span className="text-xs font-normal text-slate-500">Hiển thị rõ số kg LCD</span>
-                              </button>
-                              <p className="text-[11px] text-rose-600 font-medium bg-rose-50 p-2.5 rounded-lg border border-rose-200 text-left">
-                                ⚠️ BẮT BUỘC chụp ảnh mặt bàn cân điện tử hiển thị rõ số kg thành phẩm để chống gian lận!
-                              </p>
-                            </div>
-                          )}
+                        <div className="space-y-3">
+                          <button
+                            type="button"
+                            onClick={() => finishScalePhotoInputRef.current?.click()}
+                            className="w-full py-6 px-4 rounded-xl bg-white hover:bg-emerald-50 border-2 border-dashed border-emerald-500 text-emerald-700 font-bold text-sm flex flex-col items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+                          >
+                            <Camera className="w-8 h-8 text-emerald-600" />
+                            <span>CHỤP ẢNH MẶT BÀN CÂN ĐIỆN TỬ (*)</span>
+                            <span className="text-xs font-normal text-slate-500">Hiển thị rõ số kg LCD</span>
+                          </button>
+                          <p className="text-[11px] text-rose-600 font-medium bg-rose-50 p-2.5 rounded-lg border border-rose-200 text-left">
+                            ⚠️ BẮT BUỘC chụp ảnh mặt bàn cân điện tử hiển thị rõ số kg thành phẩm để chống gian lận!
+                          </p>
                         </div>
                       )}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -2428,11 +2891,11 @@ export const KitchenModule: React.FC = () => {
               </div>
             </div>
 
-            {/* Task 8.4 Business Rule Callout */}
+            {/* TASK-FLOW-04 Business Rule Callout */}
             <div className="mt-3 p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex items-start gap-2">
               <Info className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <span>
-                <strong>Khẳng định nghiệp vụ:</strong> Nút Ra Line chỉ ghi nhận số lượt khay/đĩa đưa ra quầy buffet để đối soát với CukCuk POS, <strong>TUYỆT ĐỐI KHÔNG TRỪ TỒN KHO</strong>.
+                <strong>Khẳng định nghiệp vụ (TASK-FLOW-04):</strong> Món ra line lấy từ <strong>KHO SAU CHẾ BIẾN</strong>. Mỗi lần bấm <strong>+1 ĐĨA</strong>, hệ thống khấu trừ trực tiếp tồn kho món ăn hoàn chỉnh. Nếu kho hết hàng, hệ thống cảnh báo yêu cầu làm mẻ mới tại <strong>Nút 2</strong>.
               </span>
             </div>
 
@@ -2479,23 +2942,33 @@ export const KitchenModule: React.FC = () => {
             </p>
 
             <div className="space-y-3 mt-4">
-              {filterItemsByStation(items, selectedStation)
-                .filter(
-                  (it) =>
-                    it.itemName.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
-                    it.itemCode.toLowerCase().includes(lineSearchTerm.toLowerCase())
-                )
-                .map((item) => {
-                  const isLoadingBtn = !!loadingLineButtons[item.id];
-                  const isCooldown = !!cooldownButtons[item.id];
+              {(processedDishes.length > 0 ? processedDishes : (items as any[]))
+                .filter((it: any) => {
+                  const name = it.dishName || it.itemName || '';
+                  const code = it.dishCode || it.itemCode || '';
+                  return (
+                    name.toLowerCase().includes(lineSearchTerm.toLowerCase()) ||
+                    code.toLowerCase().includes(lineSearchTerm.toLowerCase())
+                  );
+                })
+                .map((item: any) => {
+                  const isDish = 'dishCode' in item;
+                  const itemId = item.id;
+                  const isLoadingBtn = !!loadingLineButtons[itemId];
+                  const isCooldown = !!cooldownButtons[itemId];
                   const isLocked = isLoadingBtn || isCooldown;
-                  const countToday = lineCounters[item.id] || 0;
-                  const isAnimating = animatingLineItemId === item.id;
-                  const isShaking = shakingLineItemId === item.id;
+                  const countToday = lineCounters[itemId] || 0;
+                  const isAnimating = animatingLineItemId === itemId;
+                  const isShaking = shakingLineItemId === itemId;
+                  const currentStock = isDish ? (item.quantity ?? 0) : 10;
+                  const isOutOfStock = currentStock <= 0;
+                  const name = item.dishName || item.itemName;
+                  const unit = item.unit || 'đĩa';
+                  const category = item.category || 'Món Nóng';
 
                   return (
                     <div
-                      key={item.id}
+                      key={itemId}
                       className={`relative p-3.5 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-between gap-3 overflow-hidden transition-all ${
                         isShaking ? 'ring-2 ring-amber-400 animate-haptic-shake' : ''
                       }`}
@@ -2504,14 +2977,25 @@ export const KitchenModule: React.FC = () => {
                       {isAnimating && (
                         <div className="absolute top-2 right-4 px-3 py-1 rounded-full bg-emerald-600 text-white font-black text-xs shadow-xl animate-float-up flex items-center gap-1 z-20 pointer-events-none">
                           <Check className="h-3.5 w-3.5" />
-                          <span>+1 {item.unit}!</span>
+                          <span>+1 {unit}!</span>
                         </div>
                       )}
 
-                      <div>
-                        <div className="font-bold text-sm sm:text-base text-slate-900">{item.itemName}</div>
-                        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
-                          <span>Đã ra hôm nay:</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-sm sm:text-base text-slate-900 truncate">{name}</div>
+                        <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[11px] font-semibold text-slate-600">Tồn kho sau chế biến:</span>
+                          <span
+                            className={`font-mono font-black ${
+                              isOutOfStock
+                                ? 'text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            {currentStock} {unit}
+                          </span>
+                          <span className="text-slate-300">•</span>
+                          <span>Đã ra line:</span>
                           <span
                             className={`font-mono font-black transition-all ${
                               isAnimating ? 'text-emerald-600 scale-125' : 'text-amber-700'
@@ -2519,18 +3003,26 @@ export const KitchenModule: React.FC = () => {
                           >
                             {countToday}
                           </span>
-                          <span>{item.unit}</span>
+                          <span>{unit}</span>
                           <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded ml-1 font-semibold">
-                            {item.category}
+                            {category}
                           </span>
                         </div>
+                        {isOutOfStock && (
+                          <div className="text-[10px] font-bold text-rose-700 mt-1 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            <span>Hết món trong kho sau chế biến! Cần làm mẻ tại Nút 2.</span>
+                          </div>
+                        )}
                       </div>
 
                       <button
                         onClick={() => handleLineItemInc(item)}
-                        disabled={isLocked}
+                        disabled={isLocked || isOutOfStock}
                         className={`btn-touch px-4 h-12 rounded-xl text-white font-extrabold text-sm flex items-center gap-1.5 shadow-md active:scale-95 transition-all flex-shrink-0 ${
-                          isLocked
+                          isOutOfStock
+                            ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none'
+                            : isLocked
                             ? 'bg-amber-300 cursor-not-allowed opacity-80'
                             : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 shadow-amber-500/20'
                         }`}
@@ -2545,10 +3037,12 @@ export const KitchenModule: React.FC = () => {
                             <Clock className="h-4 w-4 animate-pulse" />
                             <span>CHỜ 1.5s</span>
                           </>
+                        ) : isOutOfStock ? (
+                          <span>HẾT KHO</span>
                         ) : (
                           <>
                             <PlusCircle className="h-5 w-5" />
-                            <span>+1 {item.unit}</span>
+                            <span>+1 {unit}</span>
                           </>
                         )}
                       </button>
@@ -2823,6 +3317,442 @@ export const KitchenModule: React.FC = () => {
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* MODAL 5: TỔNG HỢP MÓN DÙNG & ĐỒ ĂN CUỐI CA                     */}
+      {/* ============================================================== */}
+      {activeModal === 'leftoverWaste' && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in">
+          <div className="bg-white w-full max-w-xl lg:max-w-4xl rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2 text-purple-700 font-black text-base">
+                <Trash2 className="h-6 w-6 text-purple-600" />
+                <span>NÚT 5: TỔNG HỢP MÓN DÙNG & ĐỒ ĂN CUỐI CA</span>
+              </div>
+              <button
+                onClick={() => setActiveModal(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* TAB CHUYỂN ĐỔI: 1. BẢNG TỔNG HỢP MÓN DÙNG & 2. CHỐT ĐỒ ĂN THỪA */}
+            <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl mt-3.5">
+              <button
+                type="button"
+                onClick={() => setWasteModalTab('summary')}
+                className={`btn-touch py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  wasteModalTab === 'summary'
+                    ? 'bg-white text-purple-800 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                <span>1. Bảng Tổng Hợp Món Dùng</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setWasteModalTab('waste')}
+                className={`btn-touch py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  wasteModalTab === 'waste'
+                    ? 'bg-white text-purple-800 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>2. Chốt Đồ Ăn Thừa Cuối Ca</span>
+              </button>
+            </div>
+
+            {/* TAB 1: BẢNG TỔNG HỢP MÓN DÙNG TRONG NGÀY */}
+            {wasteModalTab === 'summary' && (
+              <div className="mt-4 space-y-4">
+                {/* Business Rule Callout */}
+                <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-950 text-xs flex items-start gap-2">
+                  <Info className="h-4 w-4 text-purple-700 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Công thức cân đối món dùng trong ngày (TASK-FLOW-05):</span>
+                    <p className="font-mono font-bold text-purple-900 text-[11px] sm:text-xs mt-0.5">
+                      Tồn đầu ca + Nhập từ Nút 2 - Ra line Nút 3 = Tồn kho sau (Hiện tại)
+                    </p>
+                  </div>
+                </div>
+
+                {/* 4 Thẻ KPI tóm tắt */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase block">Tổng Số Món</span>
+                    <span className="text-lg font-black text-slate-900">{processedDishes.length}</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-center">
+                    <span className="text-[10px] font-bold text-emerald-700 uppercase block">Đang Sẵn Sàng</span>
+                    <span className="text-lg font-black text-emerald-800">
+                      {processedDishes.filter((d) => (d.quantity || 0) > 0).length}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-center">
+                    <span className="text-[10px] font-bold text-amber-700 uppercase block">Đã Ra Line (Nút 3)</span>
+                    <span className="text-lg font-black text-amber-800">
+                      {Object.values(lineCounters).reduce((a, b) => a + b, 0)} đĩa
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-purple-50 border border-purple-200 text-center">
+                    <span className="text-[10px] font-bold text-purple-700 uppercase block">Tồn Kho Sau</span>
+                    <span className="text-lg font-black text-purple-900">
+                      {processedDishes.reduce((acc, d) => acc + (d.quantity || 0), 0).toFixed(0)} đĩa
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bảng danh sách món ăn */}
+                <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-700 font-black uppercase text-[10px] tracking-wider border-b border-slate-200">
+                        <th className="py-2.5 px-3">Món Ăn Hoàn Chỉnh</th>
+                        <th className="py-2.5 px-2 text-center">ĐVT</th>
+                        <th className="py-2.5 px-2 text-right">Tồn Đầu</th>
+                        <th className="py-2.5 px-2 text-right text-emerald-700">Nhập Nút 2</th>
+                        <th className="py-2.5 px-2 text-right text-amber-700">Ra Line Nút 3</th>
+                        <th className="py-2.5 px-3 text-right text-purple-700">Tồn Kho Sau</th>
+                        <th className="py-2.5 px-2 text-center">Trạng Thái</th>
+                        <th className="py-2.5 px-2 text-center">Thao Tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {processedDishes.map((dish) => {
+                        const tonKhoSau = dish.quantity || 0;
+                        const raLine = lineCounters[dish.id] || 0;
+                        const nhapNut2 = 0;
+                        const tonDau = Number((tonKhoSau + raLine - nhapNut2).toFixed(2));
+                        const isOut = tonKhoSau <= 0;
+
+                        return (
+                          <tr key={dish.id} className="hover:bg-purple-50/40 transition-colors">
+                            <td className="py-2.5 px-3 font-bold text-slate-900">
+                              <div className="flex items-center gap-1.5">
+                                <Utensils className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+                                <span>{dish.dishName}</span>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-2 text-center text-slate-500 font-semibold">{dish.unit}</td>
+                            <td className="py-2.5 px-2 text-right font-mono font-bold text-slate-700">
+                              {tonDau}
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono font-bold text-emerald-600">
+                              +{nhapNut2}
+                            </td>
+                            <td className="py-2.5 px-2 text-right font-mono font-bold text-amber-600">
+                              -{raLine}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono font-black text-sm text-purple-800 bg-purple-50/50">
+                              {tonKhoSau}
+                            </td>
+                            <td className="py-2.5 px-2 text-center">
+                              {isOut ? (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-100 text-rose-700">
+                                  HẾT HÀNG
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-emerald-100 text-emerald-800">
+                                  SẴN SÀNG
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-2 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLeftoverDishId(dish.id);
+                                  setLeftoverItemName(dish.dishName);
+                                  setLeftoverUnit(dish.unit || 'đĩa');
+                                  setWasteModalTab('waste');
+                                }}
+                                className="px-2 py-1 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-800 font-bold text-[10px] cursor-pointer"
+                              >
+                                Chốt thừa
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setWasteModalTab('waste')}
+                    className="btn-touch px-4 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
+                  >
+                    <span>Chuyển sang Chốt Đồ Ăn Thừa Cuối Ca</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: CHỐT ĐỒ ĂN THỪA CUỐI CA */}
+            {wasteModalTab === 'waste' && (
+              <form onSubmit={handleLeftoverWasteSubmit} className="space-y-4 mt-4">
+                <div className="flex items-center justify-between pb-1">
+                  <h4 className="font-bold text-xs text-purple-800 uppercase tracking-wide">
+                    NÚT 5: TẠO ĐỒ ĂN THỪA CUỐI CA
+                  </h4>
+                </div>
+
+                {/* Business Rule Callout */}
+                <div className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-950 text-xs leading-relaxed space-y-1">
+                  <p className="font-bold text-purple-800 flex items-center gap-1.5">
+                    <ShieldCheck className="h-4 w-4 text-purple-600 flex-shrink-0" />
+                    <span>Quy Chuẩn Chống Thất Thoát & Kiểm Soát Cuối Ca (TASK-FLOW-05):</span>
+                  </p>
+                  <p className="text-purple-900/90 text-xs">
+                    Ghi nhận số lượng thức ăn dư thừa trên line buffet hoặc trong bếp cuối ca để hạch toán vào <strong>"Hỏng/bỏ có báo"</strong> của Bảng đối soát cuối ngày.
+                    <strong> BẮT BUỘC chụp ảnh mặt bàn cân / khay thức ăn thừa</strong> để chống thất thoát.
+                  </p>
+                </div>
+
+                {/* Phân loại vị trí thức ăn thừa */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase">
+                    VỊ TRÍ THỨC ĂN THỪA
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLeftoverLocation('LINE')}
+                      className={`btn-touch py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        leftoverLocation === 'LINE'
+                          ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Utensils className="h-4 w-4" />
+                      <span>Trên Line Buffet</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLeftoverLocation('BEP')}
+                      className={`btn-touch py-2.5 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                        leftoverLocation === 'BEP'
+                          ? 'bg-purple-600 text-white border-purple-600 shadow-sm'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Flame className="h-4 w-4" />
+                      <span>Trong Kho Bếp</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Chọn món ăn thừa */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                    MÓN ĂN DƯ THỪA
+                  </label>
+                  <select
+                    value={leftoverDishId}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      setLeftoverDishId(id);
+                      const d = processedDishes.find((dish) => dish.id === id);
+                      if (d) {
+                        setLeftoverItemName(d.dishName);
+                        setLeftoverUnit(d.unit || 'đĩa');
+                      }
+                    }}
+                    className="w-full h-12 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 text-sm focus:ring-2 focus:ring-purple-500"
+                  >
+                    {processedDishes.map((dish) => (
+                      <option key={dish.id} value={dish.id}>
+                        {dish.dishName} ({dish.unit}) - [Kho Sau: {dish.quantity} {dish.unit}]
+                      </option>
+                    ))}
+                    {items.map((i) => (
+                      <option key={`item-${i.id}`} value={i.id}>
+                        {i.itemName} ({i.unit}) - [Nguyên liệu]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Số lượng thừa & Đơn vị tính */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-2">
+                    <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                      SỐ LƯỢNG THỪA
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.1"
+                      placeholder="Nhập số lượng..."
+                      value={leftoverQty}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(',', '.');
+                        setLeftoverQty(val === '' ? '' : parseFloat(val) || 0);
+                      }}
+                      className="w-full h-12 px-3 rounded-xl border border-slate-300 font-black text-lg text-slate-900 focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                      ĐƠN VỊ TÍNH
+                    </label>
+                    <select
+                      value={leftoverUnit}
+                      onChange={(e) => setLeftoverUnit(e.target.value)}
+                      className="w-full h-12 px-2.5 rounded-xl border border-slate-300 font-bold text-slate-800 text-sm focus:ring-2 focus:ring-purple-500"
+                    >
+                      <option value="đĩa">Đĩa</option>
+                      <option value="kg">kg</option>
+                      <option value="khay">Khay</option>
+                      <option value="bát">Bát</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Lý do thức ăn thừa */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                    LÝ DO DƯ THỪA
+                  </label>
+                  <select
+                    value={leftoverReason}
+                    onChange={(e) => setLeftoverReason(e.target.value)}
+                    className="w-full h-11 px-3 rounded-xl border border-slate-300 text-slate-800 font-semibold text-xs sm:text-sm focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="Khách dùng không hết">Khách dùng không hết (thừa trên quầy buffet)</option>
+                    <option value="Quá thời gian trưng bày theo chuẩn ATTP">Quá thời gian trưng bày theo chuẩn ATTP</option>
+                    <option value="Sơ chế / Nấu dư thừa trong ca">Sơ chế / Nấu dư thừa trong ca</option>
+                    <option value="Món ăn bị nguội hoặc hỏng chất lượng">Món ăn bị nguội hoặc hỏng chất lượng</option>
+                    <option value="Khác">Lý do khác...</option>
+                  </select>
+                </div>
+
+                {/* Ghi chú */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">
+                    GHI CHÚ THÊM (TÙY CHỌN)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ghi chú thêm về món ăn thừa..."
+                    value={leftoverNote}
+                    onChange={(e) => setLeftoverNote(e.target.value)}
+                    className="w-full h-11 px-3 rounded-xl border border-slate-300 text-xs sm:text-sm focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                {/* KHU VỰC BẮT BUỘC CHỤP ẢNH BÀN CÂN / THỨC ĂN THỪA */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-black text-rose-700 uppercase flex items-center gap-1">
+                      <Camera className="h-4 w-4 text-rose-600" />
+                      <span>ẢNH CHỤP MẶT BÀN CÂN / THỨC ĂN THỪA (BẮT BUỘC)</span>
+                    </label>
+                    {leftoverPhoto && (
+                      <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                        ✓ Đã nén: {Math.round(leftoverPhoto.compressedSizeKb)}KB
+                      </span>
+                    )}
+                  </div>
+
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    ref={leftoverPhotoInputRef}
+                    onChange={handleLeftoverPhotoUpload}
+                    className="hidden"
+                  />
+
+                  {!leftoverPhoto ? (
+                    <div
+                      onClick={() => leftoverPhotoInputRef.current?.click()}
+                      className="p-6 rounded-2xl border-2 border-dashed border-rose-300 bg-rose-50/60 hover:bg-rose-50 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99]"
+                    >
+                      {isCompressingLeftoverPhoto ? (
+                        <div className="flex flex-col items-center gap-2 py-2">
+                          <Loader2 className="h-8 w-8 animate-spin text-purple-600" />
+                          <span className="text-xs font-bold text-purple-800">Đang nén ảnh Canvas API & chèn Watermark...</span>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="p-3 rounded-full bg-rose-100 text-rose-600 shadow-xs">
+                            <Camera className="h-7 w-7" />
+                          </div>
+                          <div className="text-center">
+                            <p className="font-black text-rose-800 text-xs sm:text-sm">
+                              BẤM ĐỂ CHỤP ẢNH BÀN CÂN / KHAY THỨC ĂN THỪA
+                            </p>
+                            <p className="text-[11px] text-rose-600 mt-0.5">
+                              Camera điện thoại / máy tính bảng • Tự động nén &lt; 200KB kèm Watermark
+                            </p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="relative rounded-2xl overflow-hidden border border-purple-200 bg-purple-50/40 p-2 flex items-center gap-3">
+                      <img
+                        src={leftoverPhoto.dataUrl}
+                        alt="Ảnh thức ăn thừa"
+                        className="w-24 h-24 object-cover rounded-xl border border-slate-200 shadow-xs"
+                      />
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="text-xs font-bold text-purple-900 flex items-center gap-1">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                          <span>Đã có ảnh minh chứng hợp lệ</span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Độ phân giải: {leftoverPhoto.width}x{leftoverPhoto.height}px
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => leftoverPhotoInputRef.current?.click()}
+                          className="text-xs font-bold text-purple-700 hover:text-purple-900 underline flex items-center gap-1 pt-1 cursor-pointer"
+                        >
+                          <RotateCw className="h-3.5 w-3.5" />
+                          <span>Chụp lại ảnh khác</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {!leftoverPhoto && (
+                    <div className="p-2 rounded-xl bg-amber-50 border border-amber-200 flex items-center gap-2 text-xs font-semibold text-amber-900">
+                      <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+                      <span>Hệ thống sẽ khóa nút xác nhận nếu chưa có ảnh chụp đính kèm.</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Nút xác nhận lưu */}
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSubmittingLeftover || !leftoverPhoto || !leftoverQty || Number(leftoverQty) <= 0}
+                    className="btn-touch w-full h-14 rounded-xl bg-purple-700 hover:bg-purple-800 disabled:bg-slate-300 disabled:cursor-not-allowed disabled:text-slate-500 disabled:shadow-none text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 transition-all cursor-pointer"
+                  >
+                    {isSubmittingLeftover ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-5 w-5" />
+                        <span>XÁC NHẬN GHI NHẬN ĐỒ ĂN THỪA</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

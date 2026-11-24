@@ -137,4 +137,11 @@ docker compose logs -f frontend
 ```
 
 ---
+
+## 6. Thư Mục Tài Liệu & Kế Hoạch (Documentation & Tasks)
+
+- **Tài liệu Thiết kế Cơ sở Dữ liệu & Schema**: [docs/DATABASE_SCHEMA.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/docs/DATABASE_SCHEMA.md)
+- **Kế hoạch kỹ thuật & Báo cáo nghiệp vụ**: [task/README.md](file:///run/media/tamdae/Data/Source%20code/restaurant_project/task/README.md)
+
+---
 *Dự án được xây dựng và nghiệm thu theo đúng tiêu chuẩn Enterprise của Sen Việt Buffet.*
