@@ -2,31 +2,71 @@
 ## HỆ THỐNG QUẢN TRỊ KHO BẾP, NHÂN SỰ & CHỐNG THẤT THOÁT — SEN VIỆT BUFFET
 
 > **Dự án**: Sen Việt Buffet Management System  
-> **Chủ quản**: Công ty TNHH T&T Nguyễn Dương  
-> **Chi nhánh**: 2 Chi nhánh (Thái Nguyên `CN_THAI_NGUYEN` & Quế Võ `CN_QUE_VO`)  
-> **Công nghệ lưu trữ**: PostgreSQL 16 (Alpine Container)  
-> **Quản lý Migration**: Flyway Migration Engine (11 phiên bản `V1` $\rightarrow$ `V11`)  
+> **Chủ quản**: Công ty TNHH T&T Nguyễn Dương (Đại diện: Chị Thêm)  
+> **Chi nhánh ban đầu**: 2 Chi nhánh (Thái Nguyên `CN_THAI_NGUYEN` & Quế Võ `CN_QUE_VO`)  
+> **Công nghệ lưu trữ**: PostgreSQL 16 (Container `senviet-postgres`) & IndexedDB Dexie (Offline Resilience Frontend)  
+> **Quản lý Migration**: Flyway Migration Engine (13 phiên bản `V1` $\rightarrow$ `V13`)  
 > **Encoding**: UTF-8 | **Múi giờ**: `Asia/Ho_Chi_Minh` (`UTC+7`)  
-> **Tổng số bảng nghiệp vụ**: **35 bảng** (+ 1 bảng lịch sử `flyway_schema_history`)  
+> **Tổng số bảng nghiệp vụ**: **36 bảng** (+ 1 bảng lịch sử `flyway_schema_history`)  
 
 ---
 
 ## 1. TỔNG QUAN KIẾN TRÚC DỮ LIỆU & QUY TẮC CỐT LÕI
 
-Hệ thống cơ sở dữ liệu được thiết kế theo mô hình **Multi-branch Tenant-isolated Relational Schema** nhằm đáp ứng 4 bài toán lớn:
-1. **Cô lập dữ liệu giữa các chi nhánh**: Hầu hết các bảng nghiệp vụ đều có cột `branch_id` liên kết tới bảng `branches`. Các truy vấn kho, chế biến, chấm công, bảng lương đều lọc nghiêm ngặt theo `branch_id` để tránh rò rỉ dữ liệu giữa Thái Nguyên và Quế Võ.
-2. **Quy trình Bếp 4 Nút & Chống Gian Lận Cân Mẻ**:
-   - Nút 1 (`take_out_logs`): Trừ kho tức thời, cấm rút quá số lượng tồn khả dụng trong kho.
-   - Nút 2 (`processing_batches`): Cân nguyên liệu đầu vào, ẩn định mức % hao hụt đối với nhân viên bếp, chụp ảnh cân thành phẩm thực tế, cảnh báo khi mở mẻ thứ hai trùng món.
-   - Nút 3 (`damage_reports`): Báo hỏng nguyên liệu kèm nén ảnh qua canvas và quy trình duyệt của Quản lý Bếp.
-   - Nút 4 (`line_item_logs`): Ghi nhận số lượng đĩa/khay đưa ra line buffet, cơ chế chống double-click.
-3. **Đối Soát Khép Kín Với Doanh Thu POS CukCuk**:
-   - Bảng `daily_reconciliations` tự động tính chênh lệch không rõ nguyên nhân theo công thức:  
-     $$\text{Lệch} = (\text{Tồn đầu} + \text{Nhập}) - (\text{Xuất chế biến} + \text{Hỏng có báo} + \text{Tồn cuối ngày}) - \text{Khách dùng (CukCuk)}$$
-   - Tự động ghi nhật ký cảnh báo Zalo qua `notification_logs` khi số tiền lệch $> 300.000$ đ hoặc tỷ lệ thất thoát $> 5\%$.
-4. **Vết Kiểm Toán & Khóa Sổ Tài Chính**:
-   - Mọi hành động nhạy cảm đều được ghi lại trong `audit_logs`.
-   - Các kỳ tính lương được chốt bằng cờ `is_locked = true` trong `payroll_periods` để ngăn chặn việc sửa đổi số liệu quá khứ.
+Hệ thống cơ sở dữ liệu được thiết kế theo mô hình **Multi-branch Tenant-isolated Relational Schema** nhằm đáp ứng 5 bài toán lớn của Sen Việt Buffet:
+
+### 1.1. Kiến Trúc Kho 2 Tầng (Dual-Tier Warehouse Inventory)
+* **Kho Trước Chế Biến (`items`, `inventory_stocks`, `import_batches`)**:
+  * Quản lý toàn bộ **217 mặt hàng nguyên vật liệu thô thực tế** trích xuất từ bảng kê T11/2026 chi nhánh Quế Võ.
+  * Phân loại chặt chẽ vào **11 nhóm danh mục chuẩn hóa**:
+    1. `HS_CHINH`: Hải sản chính (9 món: Cua thịt, Ghẹ, Bề bề, Hàu, Tôm càng xanh, Tôm sú, Tôm mũ ni, Mực, Ốc hương)
+    2. `VC_VO_CUNG`: Hải sản vỏ cứng (8 món: Sò lông, Sò huyết, Vẹm xanh, Ngao hai cùi, Ngao mỡ, Ốc nhồi, Ốc mít, Sò méo)
+    3. `HS_PHU`: Hải sản phụ (4 món: Cá lăng, Cá trích, Cá hồi, Tôm lớp)
+    4. `THIT`: Thịt & Gia cầm (20 món: Bắp bò, Ba chỉ bò thanh, Cánh gà, Xúc xích, Lườn ngỗng...)
+    5. `RAU`: Rau, củ, quả & nấm tươi (70 món: Dứa, Cải canh, Nấm kim châm, Bắp ngô, Mướp...)
+    6. `HANG_KHO`: Hàng khô & Gia vị (63 món: Bột bánh xèo, Bánh bao kim sa, Muối Hảo Hảo, Dầu hào...)
+    7. `DO_AN_NHAN_VIEN`: Đồ ăn nhân viên ca (15 món: Cá rô phi, Thịt nạc vai, Giò lụa...)
+    8. `BAR`: Bar & Đồ uống (3 món: Bia bão tuyết, Rượu Quang Huệ, Đá xay)
+    9. `TIEU_HAO`: Vật tư tiêu hao & Vận hành (23 món: Cồn khô, Gas Hồng Lĩnh, Bao đũa, Giấy rút...)
+    10. `VC_CUA_GHE`: Vận chuyển Cua, Ghẹ (1 món)
+    11. `VC_KHAC`: Vận chuyển Khác (1 món)
+  * Cổng nhập duy nhất: Thao tác **`⚖️ CÂN HÀNG MỚI VỀ`** (kiểm tra đối chiếu cân thực tế vs hóa đơn giao nhận NCC).
+* **Kho Sau Chế Biến (`processed_dishes`)**:
+  * Quản lý các **món ăn hoàn chỉnh** đã nấu chín sẵn sàng đưa lên phục vụ line buffet (Đơn vị tính: `đĩa`, `bát`, `khay`).
+  * Ví dụ điển hình: **Hàu nướng mỡ hành** (`DISH-HAU-NUONG`, 16 đĩa tại Quế Võ, 25 đĩa tại Thái Nguyên), **Cua sốt me**, **Ghẹ hấp sả**, **Bò sốt tiêu đen**, **Tôm sú nướng muối ớt**...
+  * Liên kết công thức định mức nguyên liệu trước chế biến qua bảng `recipes` & `recipe_ingredients`.
+  * **Cơ chế biến động tồn đĩa tự động**:
+    * **Tăng tồn đĩa (+)**: Khi Nút 2 hoàn tất cân mẻ chế biến (`warehouseApi.addProcessedDishStock`).
+    * **Giảm tồn đĩa (-)**: Khi Nút 3 nhân viên bấm ra line buffet (`warehouseApi.deductProcessedDishStock`). Chặn cứng không cho ra line nếu số đĩa tồn $\le 0$.
+
+### 1.2. Quy Trình Vận Hành Bếp 5 Nút Cảm Ứng (Touch-First 5-Button Flow)
+* **Nút 1 (`take_out_logs` & `processing_batches`)**: Lấy hàng theo công thức & Tạo mẻ trước chế biến:
+  * Nhân viên chọn món ăn cần nấu (Hàu nướng mỡ hành...) $\rightarrow$ Hệ thống tự động bung các nguyên liệu thô theo công thức (Hàu, Hành lá, Mỡ phần...) $\rightarrow$ Nhập số lượng thực tế lấy nấu $\rightarrow$ **Bắt buộc chụp ảnh khay/bàn cân nguyên liệu thô trước chế biến (`raw_photo_url`)** $\rightarrow$ Khấu trừ nguyên liệu khỏi Kho Trước Chế Biến và mở mẻ ở trạng thái `DANG_LAM`.
+* **Nút 2 (`processing_batches`)**: Cân thành phẩm mẻ hoàn thành & Nhập Kho Sau Chế Biến:
+  * **Đã xóa bỏ nút 2.1 (Mở mẻ mới)** do đã gộp vào Nút 1.
+  * Chỉ làm nhiệm vụ: Chọn mẻ đang làm $\rightarrow$ Cân khối lượng thành phẩm (`output_weight`) và quy đổi ra số lượng **ĐĨA** thành phẩm (`output_plates`) $\rightarrow$ **Bắt buộc chụp ảnh mặt bàn cân điện tử (`scale_photo_url`)** $\rightarrow$ Tự động cộng số đĩa vào Kho Sau Chế Biến (`processed_dishes`).
+* **Nút 3 (`line_item_logs`)**: Bấm ra line buffet (+1 đĩa):
+  * Khấu trừ trực tiếp số đĩa từ Kho Sau Chế Biến (`processed_dishes`). Trang bị cơ chế chống double-click và cảnh báo làm mẻ mới khi hết đĩa.
+* **Nút 4 (`damage_reports`)**: Báo hỏng mẻ chế biến:
+  * Đầu bếp báo hỏng mẻ bị cháy/khét/sự cố, đính kèm ảnh bằng chứng nén Canvas $\le 250$ KB và gửi Quản lý Bếp duyệt.
+* **Nút 5 (`daily_waste_confirmations` & `daily_remaining`)**: Tổng hợp món dùng trong ngày & Chốt đồ ăn thừa cuối ca:
+  * Tab 1: Bảng tổng hợp món dùng trong ngày theo công thức:  
+    $$\text{Tồn đầu ca} + \text{Nhập Nút 2} - \text{Ra line Nút 3} = \text{Tồn kho sau (Hiện tại)}$$
+  * Tab 2: Chốt đồ ăn thừa cuối ca trên line / trong bếp, bắt buộc chụp ảnh bàn cân thức ăn thừa để đối soát với CukCuk POS.
+* **Header Bếp**: Đã loại bỏ nút "Cân hàng mới về" khỏi màn hình Bếp để tránh trùng lặp với phân hệ Kho cơ sở.
+
+### 1.3. Cô Lập Dữ Liệu Đa Chi Nhánh (Tenant Isolation)
+* Toàn bộ 36 bảng nghiệp vụ đều liên kết chặt chẽ qua khóa ngoại `branch_id` $\rightarrow$ `branches(id)`.
+* Mọi truy vấn đọc/ghi đều lọc theo `branch_id` của phiên đăng nhập người dùng, tuyệt đối không rò rỉ dữ liệu tồn kho, giá vốn, doanh thu hay tiền lương giữa Thái Nguyên và Quế Võ.
+
+### 1.4. Đối Soát Khép Kín Với POS CukCuk & Báo Động Zalo
+* Bảng `daily_reconciliations` tự động tính chênh lệch không rõ nguyên nhân:  
+  $$\text{Lệch} = (\text{Tồn đầu} + \text{Nhập}) - (\text{Xuất chế biến} + \text{Hỏng có báo} + \text{Tồn cuối ngày}) - \text{Khách dùng (CukCuk)}$$
+* Tự động gửi cảnh báo qua Zalo Webhook (`notification_logs`) khi thất thoát $> 300.000$ VNĐ hoặc tỷ lệ lệch $> 5\%$.
+
+### 1.5. Vết Kiểm Toán & Khóa Sổ Tài Chính
+* Bảng `audit_logs` lưu trữ mọi hành động nhạy cảm: duyệt hủy hàng, chỉnh sửa định mức, khóa kỳ lương.
+* Bảng `payroll_periods` sử dụng cờ `is_locked = true` niêm phong dữ liệu lương, cấm sửa đổi lịch sử.
 
 ---
 
@@ -35,8 +75,9 @@ Hệ thống cơ sở dữ liệu được thiết kế theo mô hình **Multi-b
 ```mermaid
 erDiagram
     BRANCHES ||--o{ USERS : "thuộc chi nhánh"
-    BRANCHES ||--o{ INVENTORY_STOCKS : "quản lý kho"
+    BRANCHES ||--o{ INVENTORY_STOCKS : "quản lý kho thô"
     BRANCHES ||--o{ PROCESSING_BATCHES : "mẻ chế biến"
+    BRANCHES ||--o{ PROCESSED_DISHES : "kho sau chế biến (đĩa)"
     BRANCHES ||--o{ DAILY_RECONCILIATIONS : "đối soát cuối ngày"
     BRANCHES ||--o{ ATTENDANCES : "chấm công"
     BRANCHES ||--o{ PAYROLLS : "tính lương"
@@ -45,72 +86,78 @@ erDiagram
     ROLES ||--o{ USER_ROLES : "gán cho"
     USERS ||--o{ AUDIT_LOGS : "thực hiện"
 
-    ITEMS ||--o{ RECIPES : "món chế biến"
-    RECIPES ||--o{ RECIPE_INGREDIENTS : "định mức"
-    ITEMS ||--o{ RECIPE_INGREDIENTS : "nguyên liệu thô"
-    ITEMS ||--o{ INVENTORY_STOCKS : "tồn kho"
-    ITEMS ||--o{ PROCESSING_BATCHES : "thành phẩm mẻ"
-    ITEMS ||--o{ TAKE_OUT_LOGS : "rút kho bếp"
-    ITEMS ||--o{ DAMAGE_REPORTS : "báo hỏng"
-    ITEMS ||--o{ LINE_ITEM_LOGS : "ra line buffet"
+    ITEMS ||--o{ RECIPES : "công thức chế biến"
+    RECIPES ||--o{ RECIPE_INGREDIENTS : "định mức mẻ"
+    ITEMS ||--o{ RECIPE_INGREDIENTS : "nguyên liệu thô (Kho Trước)"
+    ITEMS ||--o{ INVENTORY_STOCKS : "tồn kho thô"
+    ITEMS ||--o{ PROCESSING_BATCHES : "nguyên liệu mẻ"
+    ITEMS ||--o{ TAKE_OUT_LOGS : "Nút 1: rút kho thô"
+    ITEMS ||--o{ DAMAGE_REPORTS : "Nút 4: báo hỏng"
 
-    SUPPLIERS ||--o{ IMPORT_BATCHES : "cung cấp"
+    PROCESSING_BATCHES ||--o{ PROCESSED_DISHES : "Nút 2: nhập thành phẩm (+ đĩa)"
+    PROCESSED_DISHES ||--o{ LINE_ITEM_LOGS : "Nút 3: ra line buffet (- đĩa)"
+    PROCESSED_DISHES ||--o{ DAILY_WASTE_CONFIRMATIONS : "Nút 5: chốt thừa cuối ca"
+
+    SUPPLIERS ||--o{ IMPORT_BATCHES : "giao lô hàng"
     ITEMS ||--o{ IMPORT_BATCHES : "lô nguyên liệu"
     IMPORT_BATCHES ||--o{ INVENTORY_STOCKS : "tồn theo lô"
-    SUPPLIERS ||--o{ WAREHOUSE_DOCUMENTS : "nhập hàng"
+    SUPPLIERS ||--o{ WAREHOUSE_DOCUMENTS : "chứng từ nhập"
     WAREHOUSE_DOCUMENTS ||--o{ WAREHOUSE_DOCUMENT_ITEMS : "chi tiết phiếu"
-    ITEMS ||--o{ WAREHOUSE_DOCUMENT_ITEMS : "mặt hàng"
+    ITEMS ||--o{ WAREHOUSE_DOCUMENT_ITEMS : "mặt hàng phiếu"
 
-    CUKCUK_SALES_IMPORTS ||--o{ DAILY_RECONCILIATIONS : "dữ liệu bán"
-    ITEMS ||--o{ DAILY_RECONCILIATIONS : "món đối soát"
+    CUKCUK_SALES_IMPORTS ||--o{ DAILY_RECONCILIATIONS : "dữ liệu bán POS"
+    ITEMS ||--o{ DAILY_RECONCILIATIONS : "mặt hàng đối soát"
 
-    USERS ||--o{ ATTENDANCES : "quẹt thẻ GPS"
-    USERS ||--o{ UNIFORM_ALLOCATIONS : "nhận đồng phục"
+    USERS ||--o{ ATTENDANCES : "chấm công GPS"
+    USERS ||--o{ UNIFORM_ALLOCATIONS : "mượn đồng phục"
     UNIFORM_ITEMS ||--o{ UNIFORM_ALLOCATIONS : "loại đồng phục"
     USERS ||--o{ RESIGNATION_REQUESTS : "xin nghỉ việc"
     USERS ||--o{ SALARY_ADVANCES : "xin ứng lương"
     USERS ||--o{ PAYROLLS : "bảng lương tháng"
-    PAYROLL_PERIODS ||--o{ PAYROLLS : "kỳ lương khóa sổ"
+    PAYROLL_PERIODS ||--o{ PAYROLLS : "kỳ lương niêm phong"
 ```
 
 ---
 
-## 3. CHI TIẾT 6 PHÂN HỆ VÀ 35 BẢNG CƠ SỞ DỮ LIỆU
+## 3. CHI TIẾT 6 PHÂN HỆ VÀ 36 BẢNG CƠ SỞ DỮ LIỆU
+
+---
 
 ### PHÂN HỆ 1: XÁC THỰC, PHÂN QUYỀN & CHI NHÁNH (5 BẢNG)
 
 #### 1.1. Bảng `branches` (Danh mục Chi nhánh)
-Quản lý các chi nhánh nhà hàng Sen Việt, tọa độ GPS phục vụ chấm công Geofencing bán kính 50m.
+Quản lý các cơ sở kinh doanh trong chuỗi buffet, lưu trữ tọa độ GPS để chấm công Geofencing bán kính 50m.
 * **PK**: `id` (`BIGINT`)
 * **Unique**: `branch_code` (`VARCHAR(50)`)
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
-| `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `branch_code` | `VARCHAR(50)` | NO | | Mã chi nhánh (`CN_THAI_NGUYEN`, `CN_QUE_VO`) |
-| `branch_name` | `VARCHAR(150)` | NO | | Tên chi nhánh đầy đủ |
-| `address` | `VARCHAR(255)` | YES | | Địa chỉ thực tế của chi nhánh |
-| `phone` | `VARCHAR(50)` | YES | | Số điện thoại liên hệ |
-| `latitude` | `NUMERIC(10,7)` | YES | | Tọa độ Vĩ độ GPS trung tâm chi nhánh |
-| `longitude` | `NUMERIC(10,7)` | YES | | Tọa độ Kinh độ GPS trung tâm chi nhánh |
+| `id` | `BIGINT` | NO | Auto | Khóa chính tự tăng |
+| `branch_code` | `VARCHAR(50)` | NO | | Mã chi nhánh: `CN_THAI_NGUYEN`, `CN_QUE_VO` |
+| `branch_name` | `VARCHAR(150)` | NO | | Tên chi nhánh: Sen Việt Thái Nguyên, Sen Việt Quế Võ |
+| `address` | `VARCHAR(255)` | YES | | Địa chỉ mặt bằng kinh doanh |
+| `phone` | `VARCHAR(50)` | YES | | Số hotline chi nhánh |
+| `latitude` | `NUMERIC(10,7)`| YES | | Vĩ độ GPS tâm chi nhánh (phục vụ chấm công) |
+| `longitude` | `NUMERIC(10,7)`| YES | | Kinh độ GPS tâm chi nhánh (phục vụ chấm công) |
+| `geofence_radius_meters` | `INTEGER` | NO | `50` | Bán kính chấm công hợp lệ (mặc định 50m) |
 | `is_active` | `BOOLEAN` | NO | `true` | Trạng thái hoạt động |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm tạo chi nhánh |
-| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm cập nhật cuối cùng |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo cơ sở |
+| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật |
 
 #### 1.2. Bảng `roles` (Danh mục Vai trò)
-Định nghĩa 5 vai trò theo ma trận RBAC doanh nghiệp.
+Định nghĩa 5 vai trò hệ thống theo RBAC Matrix (Sprint 3 & Sprint 4).
 * **PK**: `id` (`BIGINT`)
-* **Unique**: `role_name` (`VARCHAR(50)`)
+* **Unique**: `role_code` (`VARCHAR(50)`)
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `role_name` | `VARCHAR(50)` | NO | | Mã vai trò: `ROLE_KITCHEN_STAFF`, `ROLE_HEAD_CHEF`, `ROLE_RESTAURANT_MANAGER`, `ROLE_BRANCH_ACCOUNTANT`, `ROLE_GENERAL_ACCOUNTANT` |
-| `description` | `VARCHAR(255)` | YES | | Mô tả chức năng và phạm vi quyền hạn |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm tạo vai trò |
+| `role_code` | `VARCHAR(50)` | NO | | Mã vai trò: `ROLE_KITCHEN_STAFF`, `ROLE_HEAD_CHEF`, `ROLE_RESTAURANT_MANAGER`, `ROLE_BRANCH_ACCOUNTANT`, `ROLE_GENERAL_ACCOUNTANT`, `ROLE_CHU_CHUOI` |
+| `role_name` | `VARCHAR(100)` | NO | | Tên hiển thị: Bếp viên, Bếp trưởng, Quản lý chi nhánh, Kế toán chi nhánh, Kế toán tổng, Chủ chuỗi |
+| `description` | `VARCHAR(255)` | YES | | Diễn giải quyền hạn |
 
 #### 1.3. Bảng `users` (Danh mục Nhân sự & Người dùng)
-Lưu thông tin nhân viên, tài khoản đăng nhập, chi nhánh trực thuộc, tài khoản ngân hàng và mức lương cơ bản.
+Lưu thông tin đăng nhập, nhân sự, chức danh, mức lương cơ sở và tài khoản ngân hàng.
 * **PK**: `id` (`BIGINT`)
 * **Unique**: `username` (`VARCHAR(50)`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`
@@ -118,104 +165,104 @@ Lưu thông tin nhân viên, tài khoản đăng nhập, chi nhánh trực thu�
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `username` | `VARCHAR(50)` | NO | | Tên đăng nhập (duy nhất) |
-| `password` | `VARCHAR(255)` | NO | | Mật khẩu băm BCrypt |
-| `full_name` | `VARCHAR(100)` | NO | | Họ và tên nhân viên |
+| `branch_id` | `BIGINT` | YES | | Chi nhánh trực thuộc (`NULL` đối với Kế toán tổng / Chủ chuỗi) |
+| `username` | `VARCHAR(50)` | NO | | Tên đăng nhập hệ thống (`bep_tn`, `ql_chinhanh_tn`...) |
+| `password_hash`| `VARCHAR(255)`| NO | | Mật khẩu mã hóa BCrypt |
+| `full_name` | `VARCHAR(100)` | NO | | Họ và tên đầy đủ |
+| `phone` | `VARCHAR(50)` | YES | | Số điện thoại cá nhân |
 | `email` | `VARCHAR(100)` | YES | | Email liên hệ |
-| `phone` | `VARCHAR(20)` | YES | | Số điện thoại di động |
-| `branch_id` | `BIGINT` | YES | | Chi nhánh làm việc chính |
-| `status` | `VARCHAR(30)` | NO | `'ACTIVE'` | Trạng thái: `ACTIVE`, `SUSPENDED`, `RESIGNED` |
-| `bank_name` | `VARCHAR(100)` | YES | | Tên ngân hàng nhận lương (Vietcombank, MB...) |
-| `bank_account_number`| `VARCHAR(50)` | YES | | Số tài khoản ngân hàng |
-| `bank_account_holder`| `VARCHAR(100)` | YES | | Tên chủ tài khoản ngân hàng |
-| `base_salary` | `NUMERIC(15,2)`| YES | `7500000` | Mức lương cơ bản thỏa thuận (VNĐ) |
-| `role` | `VARCHAR(50)` | YES | | Vai trò chính gán trực tiếp (tùy chọn) |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo tài khoản |
-| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật gần nhất |
+| `base_salary` | `NUMERIC(15,2)`| NO | `0` | Mức lương cứng thỏa thuận theo tháng (VNĐ) |
+| `bank_account_number` | `VARCHAR(50)` | YES | | Số tài khoản ngân hàng nhận lương |
+| `bank_name` | `VARCHAR(100)` | YES | | Tên ngân hàng thụ hưởng (MBBank, Vietcombank...) |
+| `employment_status` | `VARCHAR(30)` | NO | `'DANG_LAM'`| Trạng thái: `THU_VIEC`, `DANG_LAM`, `DA_NGHI_VIEC` |
+| `is_active` | `BOOLEAN` | NO | `true` | Cho phép đăng nhập |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tiếp nhận nhân sự |
+| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật thông tin |
 
-#### 1.4. Bảng `user_roles` (Bảng phân quyền Người dùng - Vai trò)
-Hỗ trợ một nhân sự đảm nhiệm đồng thời nhiều vai trò (kiêm nhiệm).
+#### 1.4. Bảng `user_roles` (Bảng Phân Quyền Người Dùng - Vai Trò)
+Hỗ trợ cơ chế đa vai trò (Multi-role Assignment), cho phép một tài khoản kiêm nhiệm nhiều nhiệm vụ.
 * **PK**: `(user_id, role_id)`
 * **FK**: `user_id` $\rightarrow$ `users(id)`, `role_id` $\rightarrow$ `roles(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `user_id` | `BIGINT` | NO | | ID người dùng |
-| `role_id` | `BIGINT` | NO | | ID vai trò |
-| `role_name` | `VARCHAR(50)` | YES | | Tên vai trò (đệm phục vụ đọc nhanh) |
-| `assigned_at` | `TIMESTAMPTZ` | YES | `now()` | Thời điểm gán quyền |
+| `role_id` | `BIGINT` | NO | | ID vai trò gán quyền |
 
-#### 1.5. Bảng `audit_logs` (Nhật ký Vết kiểm toán)
-Ghi nhận toàn bộ thao tác thêm, sửa, xóa, duyệt đơn nhạy cảm trong hệ thống.
+#### 1.5. Bảng `audit_logs` (Nhật Ký Vết Kiểm Toán)
+Ghi nhận toàn bộ thao tác nhạy cảm: sửa số liệu kho, xuất hủy, duyệt ứng lương, khóa sổ kỳ lương.
 * **PK**: `id` (`BIGINT`)
-* **FK**: `user_id` $\rightarrow$ `users(id)`
+* **FK**: `user_id` $\rightarrow$ `users(id)`, `branch_id` $\rightarrow$ `branches(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `user_id` | `BIGINT` | YES | | Người thực hiện thao tác |
-| `action` | `VARCHAR(100)` | NO | | Hành động (`BATCH_CREATE`, `WEIGH_OUTPUT`, `LOCK_PAYROLL`...) |
-| `target_entity` | `VARCHAR(100)` | NO | | Bảng mục tiêu (`processing_batches`, `payrolls`...) |
-| `target_id` | `BIGINT` | YES | | ID của bản ghi mục tiêu |
-| `details` | `TEXT` | YES | | Chi tiết dữ liệu trước/sau thay đổi (JSON) |
-| `ip_address` | `VARCHAR(50)` | YES | | Địa chỉ IP của thiết bị client |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm ghi log |
+| `branch_id` | `BIGINT` | YES | | Chi nhánh phát sinh thao tác |
+| `user_id` | `BIGINT` | YES | | Tài khoản thực hiện hành động |
+| `action` | `VARCHAR(100)` | NO | | Tên hành động (`DUYET_BAO_HONG`, `KHOA_SO_LUONG`, `XUAT_HUY_KHO`...) |
+| `entity_name` | `VARCHAR(100)` | NO | | Bảng bị tác động (`processing_batches`, `damage_reports`...) |
+| `entity_id` | `BIGINT` | YES | | ID bản ghi bị tác động |
+| `old_value` | `TEXT` | YES | | Giá trị trước khi sửa (JSON format) |
+| `new_value` | `TEXT` | YES | | Giá trị mới sau khi sửa (JSON format) |
+| `ip_address` | `VARCHAR(45)` | YES | | Địa chỉ IP gửi request |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm ghi nhận vết kiểm toán |
 
 ---
 
-### PHÂN HỆ 2: VẬN HÀNH BẾP & QUY TRÌNH 4 NÚT (8 BẢNG)
+### PHÂN HỆ 2: VẬN HÀNH BẾP 5 NÚT CẢM ỨNG & KHO SAU CHẾ BIẾN (9 BẢNG)
 
-#### 2.1. Bảng `items` (Danh mục Hàng hóa & Món ăn)
-Quản lý tất cả mặt hàng: nguyên liệu thô, bán thành phẩm, món line buffet, đồ uống, gia vị.
+#### 2.1. Bảng `items` (KHO TRƯỚC CHẾ BIẾN — 217 Mặt Hàng Thực Tế)
+Quản lý toàn bộ 217 mặt hàng nguyên vật liệu thô thực tế trích xuất từ bảng kê nhập hàng Quế Võ T11/2026 chia theo 11 nhóm danh mục chuẩn hóa.
 * **PK**: `id` (`BIGINT`)
 * **Unique**: `item_code` (`VARCHAR(50)`)
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `item_code` | `VARCHAR(50)` | NO | | Mã hàng (`THIT_BO_MY`, `CA_HOI_PHI_LE`...) |
-| `item_name` | `VARCHAR(150)` | NO | | Tên mặt hàng hiển thị |
-| `category` | `VARCHAR(50)` | NO | | Phân loại: `HAI_SAN`, `THIT`, `RAU_CU`, `DO_UONG`, `GIA_VI` |
-| `item_type` | `VARCHAR(30)` | NO | `'RAW_MATERIAL'`| Loại: `RAW_MATERIAL`, `SEMI_FINISHED`, `FINISHED_DISH` |
-| `unit` | `VARCHAR(20)` | NO | | Đơn vị tính: `kg`, `gam`, `hop`, `chai`, `dia`, `khay` |
-| `standard_loss_rate`| `NUMERIC(5,2)`| YES | `0` | % Tỷ lệ hao hụt chế biến tiêu chuẩn cho phép |
-| `cost_price` | `NUMERIC(15,2)`| YES | `0` | Giá vốn định mức (ẩn đối với Bếp và Bếp trưởng) |
-| `selling_price` | `NUMERIC(15,2)`| YES | `0` | Giá bán niêm yết (nếu có) |
+| `item_code` | `VARCHAR(50)` | NO | | Mã hàng thực tế (`QVBAP`, `QVBCBT`, `QVCUATHIT`, `QVGHE`, `QVHAU`...) |
+| `barcode` | `VARCHAR(100)` | YES | | Mã vạch quét nhanh tại kho (`BAR-QVBAP`, `BAR-QVHAU`...) |
+| `item_name` | `VARCHAR(150)` | NO | | Tên nguyên liệu hiển thị (Bắp Bò, Ba Chỉ Bò Thanh, Cua Thịt, Hàu...) |
+| `category` | `VARCHAR(50)` | NO | | 11 nhóm chuẩn: `HS_CHINH`, `VC_VO_CUNG`, `HS_PHU`, `THIT`, `RAU`, `HANG_KHO`, `DO_AN_NHAN_VIEN`, `BAR`, `TIEU_HAO`, `VC_CUA_GHE`, `VC_KHAC` |
+| `item_type` | `VARCHAR(30)` | NO | `'RAW_MATERIAL'`| Loại hàng: `RAW_MATERIAL` (Nguyên liệu thô trước chế biến) |
+| `unit` | `VARCHAR(20)` | NO | | Đơn vị tính: `KG`, `CÁI`, `GÓI`, `QUẢ`, `BẮP`, `LON`, `LÍT` |
+| `standard_loss_rate`| `NUMERIC(5,2)`| YES | `0` | % Hao hụt sơ chế tiêu chuẩn cho phép |
+| `cost_price` | `NUMERIC(15,2)`| YES | `0` | Giá vốn nhập thực tế (ẩn đối với thợ nấu và Bếp trưởng) |
+| `selling_price` | `NUMERIC(15,2)`| YES | `0` | Giá niêm yết (nếu có) |
+| `is_buffet_line` | `BOOLEAN` | NO | `false`| Mặt hàng có phục vụ trực tiếp trên line không |
 | `is_active` | `BOOLEAN` | NO | `true` | Trạng thái sử dụng |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo |
 | `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật |
 
-#### 2.2. Bảng `recipes` (Công thức & Định mức Món)
-Định nghĩa công thức chế biến thành phẩm từ các nguyên liệu thô.
+#### 2.2. Bảng `recipes` (Công Thức Chế Biến Món Ăn)
+Định nghĩa công thức nấu mẻ từ các nguyên liệu thô trong Kho Trước Chế Biến.
 * **PK**: `id` (`BIGINT`)
-* **FK**: `item_id` $\rightarrow$ `items(id)` (Món ăn thành phẩm)
+* **FK**: `item_id` $\rightarrow$ `items(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `item_id` | `BIGINT` | NO | | Món thành phẩm đầu ra |
-| `recipe_name` | `VARCHAR(150)` | NO | | Tên công thức chế biến |
+| `item_id` | `BIGINT` | NO | | Nguyên liệu chủ lực hoặc liên kết món |
+| `recipe_name` | `VARCHAR(150)` | NO | | Tên công thức (Hàu nướng mỡ hành, Cua sốt me, Ghẹ hấp sả...) |
 | `expected_output_weight`| `NUMERIC(10,3)`| YES | | Khối lượng thành phẩm dự kiến (kg) |
 | `standard_loss_rate`| `NUMERIC(5,2)`| YES | `0` | Tỷ lệ hao hụt chuẩn cho phép (%) |
-| `instructions` | `TEXT` | YES | | Hướng dẫn các bước nấu/sơ chế |
+| `instructions` | `TEXT` | YES | | Hướng dẫn kỹ thuật nấu |
 | `is_active` | `BOOLEAN` | NO | `true` | Trạng thái áp dụng |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo |
 
-#### 2.3. Bảng `recipe_ingredients` (Chi tiết Định mức Nguyên liệu Công thức)
-Danh sách nguyên liệu cấu thành 1 mẻ công thức.
+#### 2.3. Bảng `recipe_ingredients` (Chi Tiết Định Mức Nguyên Liệu Công Thức)
 * **PK**: `id` (`BIGINT`)
 * **FK**: `recipe_id` $\rightarrow$ `recipes(id)`, `ingredient_item_id` $\rightarrow$ `items(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `recipe_id` | `BIGINT` | NO | | Thuộc công thức nào |
-| `ingredient_item_id`| `BIGINT` | NO | | Nguyên liệu thô đầu vào |
-| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng tiêu chuẩn đầu vào cho 1 mẻ (kg) |
-| `loss_tolerance_percent`| `NUMERIC(5,2)`| YES | `0` | Biên độ hao hụt cho phép của riêng nguyên liệu này (%) |
+| `recipe_id` | `BIGINT` | NO | | ID công thức |
+| `ingredient_item_id`| `BIGINT` | NO | | Nguyên liệu thô Kho Trước (`QVHAU`, `QVHANHLA`, `QVMO`...) |
+| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng/Số lượng định mức tiêu chuẩn |
+| `loss_tolerance_percent`| `NUMERIC(5,2)`| YES | `0` | Biên độ hao hụt cho phép của nguyên liệu này (%) |
 
-#### 2.4. Bảng `take_out_logs` (NÚT 1: Lấy Hàng Ra Chế Biến)
-Ghi nhận việc nhân viên bếp lấy nguyên liệu từ kho ra khu vực sơ chế. Trừ tồn kho tức thời.
+#### 2.4. Bảng `take_out_logs` (NÚT 1: Lấy Hàng Theo Công Thức & Tạo Mẻ Trước Chế Biến)
+Ghi nhận việc bếp lấy nguyên liệu thô theo công thức món ăn, khấu trừ tồn kho trước chế biến tức thời.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `user_id` $\rightarrow$ `users(id)`
 
@@ -223,78 +270,113 @@ Ghi nhận việc nhân viên bếp lấy nguyên liệu từ kho ra khu vực s
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh lấy hàng |
-| `item_id` | `BIGINT` | NO | | Nguyên liệu lấy ra |
-| `user_id` | `BIGINT` | NO | | Nhân viên bếp thực hiện lấy hàng |
-| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng lấy ra (kg) — Phải $\le$ tồn khả dụng |
-| `purpose` | `VARCHAR(100)` | YES | `'CHE_BIEN'` | Mục đích: `CHE_BIEN`, `SO_CHE`, `DE_LINE` |
-| `note` | `VARCHAR(255)` | YES | | Ghi chú lý do lấy |
+| `item_id` | `BIGINT` | NO | | Nguyên liệu thô lấy ra từ Kho Trước Chế Biến |
+| `user_id` | `BIGINT` | NO | | Bếp viên thực hiện lấy hàng |
+| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng/Số lượng lấy ra ($\le$ tồn khả dụng) |
+| `unit` | `VARCHAR(20)` | NO | `'kg'` | Đơn vị: `kg`, `con`, `gói`, `bắp`... |
+| `purpose` | `VARCHAR(100)` | YES | `'CHE_BIEN'` | Mục đích xuất |
+| `note` | `VARCHAR(255)` | YES | | Ghi chú mẻ nấu |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm bấm nút lấy hàng |
 
-#### 2.5. Bảng `processing_batches` (NÚT 2: Cân Mẻ & Cân Thành Phẩm)
-Quản lý quy trình nấu mẻ: Cân đầu vào thô $\rightarrow$ Chế biến $\rightarrow$ Cân thành phẩm đầu ra $\rightarrow$ Chụp ảnh bàn cân $\rightarrow$ Tự động kiểm tra vượt hao hụt.
+#### 2.5. Bảng `processing_batches` (NÚT 2: Cân Thành Phẩm Mẻ Hoàn Thành & Nhập Kho Sau Chế Biến)
+Quản lý mẻ chế biến: Khởi tạo từ Nút 1 kèm ảnh khay nguyên liệu thô $\rightarrow$ Bếp nấu xong bấm Nút 2 cân thành phẩm $\rightarrow$ Nhập số đĩa hoàn thành $\rightarrow$ Chụp ảnh bàn cân $\rightarrow$ Tự động cộng số đĩa vào Kho Sau Chế Biến (`processed_dishes`).
 * **PK**: `id` (`BIGINT`)
-* **Unique**: `batch_code` (`VARCHAR(50)`)
+* **Unique**: `batch_code` (`VARCHAR(100)`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `recipe_id` $\rightarrow$ `recipes(id)`, `started_by_user_id` $\rightarrow$ `users(id)`, `finished_by_user_id` $\rightarrow$ `users(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `batch_code` | `VARCHAR(50)` | NO | | Mã mẻ tự sinh duy nhất (`BATCH-20261122-001`) |
+| `batch_code` | `VARCHAR(100)`| NO | | Mã mẻ tự sinh (`BATCH-20261124-001`) |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh chế biến |
-| `item_id` | `BIGINT` | NO | | Món thành phẩm đầu ra |
-| `recipe_id` | `BIGINT` | YES | | Công thức áp dụng |
-| `started_by_user_id`| `BIGINT` | NO | | Nhân viên bấm bắt đầu mẻ |
-| `finished_by_user_id`| `BIGINT` | YES | | Nhân viên bấm hoàn tất và cân thành phẩm |
-| `input_weight` | `NUMERIC(10,3)`| NO | | Khối lượng nguyên liệu thô đầu vào (kg) |
-| `output_weight` | `NUMERIC(10,3)`| YES | | Khối lượng thành phẩm sau chế biến (kg) |
-| `standard_loss_rate`| `NUMERIC(5,2)`| YES | | % Hao hụt tiêu chuẩn (ẩn đối với thợ nấu) |
-| `actual_loss_rate` | `NUMERIC(5,2)`| YES | | % Hao hụt thực tế: $\frac{\text{Vào} - \text{Ra}}{\text{Vào}} \times 100\%$ |
-| `is_over_standard` | `BOOLEAN` | NO | `false` | Cờ cảnh báo nếu hao hụt thực tế $>$ hao hụt chuẩn |
-| `scale_image_url` | `TEXT` | YES | | URL ảnh chụp mặt đồng hồ cân thành phẩm (bắt buộc) |
-| `status` | `VARCHAR(30)` | NO | `'DANG_LAM'`| Trạng thái: `DANG_LAM`, `HOAN_THANH`, `HUY` |
+| `item_id` | `BIGINT` | NO | | Món ăn chế biến |
+| `recipe_id` | `BIGINT` | YES | | Công thức món ăn áp dụng |
+| `started_by_user_id`| `BIGINT` | NO | | Nhân viên tạo mẻ tại Nút 1 |
+| `finished_by_user_id`| `BIGINT` | YES | | Nhân viên hoàn tất cân mẻ tại Nút 2 |
+| `input_weight` | `NUMERIC(12,3)`| NO | | Khối lượng nguyên liệu thô đầu vào (kg) |
+| `output_weight` | `NUMERIC(12,3)`| YES | | Khối lượng thành phẩm sau chế biến (kg) |
+| `output_plates` | `INTEGER` | YES | `0` | **Số lượng ĐĨA thành phẩm** quy đổi (cộng vào Kho Sau Chế Biến) |
+| `loss_rate` | `NUMERIC(5,2)`| YES | | % Hao hụt thực tế: $\frac{\text{Vào} - \text{Ra}}{\text{Vào}} \times 100\%$ |
+| `standard_loss_rate`| `NUMERIC(5,2)`| NO | `0.00` | % Hao hụt tiêu chuẩn (ẩn đối với thợ nấu) |
+| `is_over_standard` | `BOOLEAN` | NO | `false`| Đánh dấu cờ đỏ nếu hao hụt thực tế $>$ chuẩn |
+| `is_second_batch` | `BOOLEAN` | NO | `false`| Cảnh báo nếu mở mẻ thứ hai khi mẻ cũ chưa hoàn tất |
+| `raw_photo_url` | `TEXT` | YES | | **URL ảnh chụp khay/bàn cân nguyên liệu thô trước chế biến (Nút 1)** |
+| `scale_photo_url` | `TEXT` | YES | | **URL ảnh chụp mặt bàn cân điện tử thành phẩm (Nút 2 - Bắt buộc)** |
+| `approval_status` | `VARCHAR(50)` | NO | `'CHO_DUYET'`| Trạng thái duyệt mẻ: `CHO_DUYET`, `HOP_LE`, `BIEN_BAN` |
+| `approval_note` | `VARCHAR(255)` | YES | | Ghi chú đánh giá của Bếp trưởng |
+| `approved_by` | `VARCHAR(100)` | YES | | Bếp trưởng/Quản lý duyệt mẻ |
+| `approved_at` | `TIMESTAMPTZ` | YES | | Thời điểm duyệt mẻ |
+| `status` | `VARCHAR(50)` | NO | `'DANG_LAM'`| Trạng thái mẻ: `DANG_LAM`, `HOAN_THANH`, `HUY` |
 | `started_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm bắt đầu nấu mẻ |
-| `finished_at` | `TIMESTAMPTZ` | YES | | Thời điểm cân thành phẩm |
-| `note` | `VARCHAR(255)` | YES | | Ghi chú giải trình nếu mẻ bị cháy/chênh lệch |
+| `finished_at` | `TIMESTAMPTZ` | YES | | Thời điểm cân hoàn tất thành phẩm |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo bản ghi |
+| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật |
 
-#### 2.6. Bảng `damage_reports` (NÚT 3: Báo Hỏng Nguyên Liệu)
-Ghi nhận hàng hóa bị ôi thiu, vỡ dập, hư hỏng. Bắt buộc chụp ảnh hiện trường và qua xét duyệt của Quản lý Bếp.
+#### 2.6. Bảng `processed_dishes` (KHO SAU CHẾ BIẾN — Món Ăn Hoàn Chỉnh) ⭐ BẢNG MỚI (V13)
+Quản lý tồn kho các món ăn đã chế biến hoàn chỉnh sẵn sàng phục vụ line buffet theo chi nhánh.
 * **PK**: `id` (`BIGINT`)
-* **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `batch_id` $\rightarrow$ `import_batches(id)`, `reported_by_user_id` $\rightarrow$ `users(id)`, `approved_by_user_id` $\rightarrow$ `users(id)`, `supplier_id` $\rightarrow$ `suppliers(id)`
+* **Unique**: `(branch_id, dish_code)`
+* **FK**: `branch_id` $\rightarrow$ `branches(id)`, `raw_item_id` $\rightarrow$ `items(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `branch_id` | `BIGINT` | NO | | Chi nhánh phát hiện hỏng |
-| `item_id` | `BIGINT` | NO | | Mặt hàng bị hỏng |
-| `batch_id` | `BIGINT` | YES | | Thuộc lô nhập nào |
-| `reported_by_user_id`| `BIGINT` | NO | | Nhân viên chụp ảnh báo hỏng |
-| `approved_by_user_id`| `BIGINT` | YES | | Quản lý bếp/chi nhánh duyệt |
-| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng hỏng đề xuất hủy (kg) |
-| `damage_type` | `VARCHAR(50)` | NO | | Phân loại: `HONG_DO_NCC`, `HONG_KHO`, `HONG_CHẾ_BIEN` |
-| `reason` | `VARCHAR(255)` | NO | | Lý do chi tiết (chua, bốc mùi, dập nát...) |
-| `image_url` | `TEXT` | NO | | URL ảnh chụp bằng chứng (nén Canvas $\le 250$ KB) |
-| `supplier_id` | `BIGINT` | YES | | Nhà cung cấp liên quan (nếu hỏng do NCC để trừ công nợ) |
-| `status` | `VARCHAR(30)` | NO | `'CHO_DUYET'`| Trạng thái: `CHO_DUYET`, `DA_DUYET`, `TU_CHOI` |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm gửi báo cáo |
-| `approved_at` | `TIMESTAMPTZ` | YES | | Thời điểm quản lý duyệt |
+| `dish_code` | `VARCHAR(100)`| NO | | Mã món ăn (`DISH-HAU-NUONG`, `DISH-CUA-ME`, `DISH-GHE-HAP`...) |
+| `dish_name` | `VARCHAR(255)`| NO | | Tên món hoàn chỉnh (Hàu nướng mỡ hành, Cua sốt me...) |
+| `category` | `VARCHAR(100)`| NO | | Nhóm ẩm thực: `Món Nướng`, `Món Nóng`, `Món Hấp`, `Món Lạnh`, `Tráng Miệng` |
+| `raw_item_id` | `BIGINT` | YES | | ID nguyên liệu chủ lực trong Kho Trước Chế Biến |
+| `raw_item_code` | `VARCHAR(100)`| YES | | Mã nguyên liệu chủ lực (`QVHAU`, `QVCUATHIT`...) |
+| `raw_item_name` | `VARCHAR(255)`| YES | | Tên nguyên liệu chủ lực |
+| `branch_id` | `BIGINT` | NO | | Chi nhánh lưu trữ tồn đĩa |
+| `quantity` | `NUMERIC(12,2)`| NO | `0.00` | **Tồn đĩa khả dụng hiện tại trong kho sau chế biến** |
+| `unit` | `VARCHAR(50)` | NO | `'đĩa'` | Đơn vị tính: `đĩa`, `bát`, `khay`, `nồi` |
+| `standard_portion_weight`| `NUMERIC(10,3)`| YES| `0.650` | Khối lượng tiêu chuẩn của 1 đĩa thành phẩm (kg) |
+| `cost_price` | `NUMERIC(15,2)`| YES | `0.00` | Giá vốn định mức của 1 đĩa thành phẩm (VNĐ) |
+| `status` | `VARCHAR(50)` | NO | `'AVAILABLE'`| Trạng thái: `AVAILABLE` (còn đĩa), `OUT_OF_STOCK` (hết đĩa) |
+| `last_updated_at` | `TIMESTAMPTZ` | YES | `now()` | Thời điểm cập nhật số đĩa gần nhất |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo món |
+| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật |
 
-#### 2.7. Bảng `line_item_logs` (NÚT 4: Bấm Ra Line +1)
-Ghi nhận mỗi lần nhân viên bếp đưa đĩa thức ăn/khay thịt ra quầy phục vụ khách.
+#### 2.7. Bảng `line_item_logs` (NÚT 3: Bấm Ra Line +1 Đĩa)
+Ghi nhận mỗi lần nhân viên bấm đưa đĩa thức ăn từ Kho Sau Chế Biến lên quầy buffet. Khấu trừ trực tiếp số đĩa của món đó trong bảng `processed_dishes`.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `user_id` $\rightarrow$ `users(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `branch_id` | `BIGINT` | NO | | Chi nhánh |
-| `item_id` | `BIGINT` | NO | | Món đưa ra line |
-| `user_id` | `BIGINT` | NO | | Nhân viên bấm nút |
-| `quantity` | `NUMERIC(10,3)`| NO | `1.0` | Số lượng ra line (mặc định 1 đĩa/khay) |
-| `request_id` | `VARCHAR(64)` | YES | | Khóa Idempotency Key chống bấm đúp khi mạng lag |
+| `branch_id` | `BIGINT` | NO | | Chi nhánh ra line |
+| `item_id` | `BIGINT` | NO | | ID món ăn ra line |
+| `dish_code` | `VARCHAR(100)`| YES | | Mã món ăn trong Kho Sau Chế Biến (`DISH-HAU-NUONG`...) |
+| `user_id` | `BIGINT` | NO | | Nhân viên bấm nút ra line |
+| `quantity` | `NUMERIC(10,3)`| NO | `1.0` | Số đĩa đưa ra line (mặc định 1 đĩa) |
+| `request_id` | `VARCHAR(64)` | YES | | Khóa Idempotency chống bấm đúp khi mạng lag |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm ghi nhận ra line |
 
-#### 2.8. Bảng `daily_waste_confirmations` (Biên bản Chốt Hủy Thức Ăn Cuối Ngày)
-Ghi nhận khối lượng thức ăn còn thừa trên line buffet bị tiêu hủy khi hết ca phục vụ.
+#### 2.8. Bảng `damage_reports` (NÚT 4: Báo Hỏng Mẻ Chế Biến)
+Ghi nhận hàng hóa/mẻ chế biến bị cháy, khét, hỏng hoặc nguyên liệu giao đến bị ôi thiu. Bắt buộc có ảnh chụp hiện trường nén Canvas $\le 250$ KB và qua xét duyệt của Quản lý Bếp.
+* **PK**: `id` (`BIGINT`)
+* **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `batch_id` $\rightarrow$ `import_batches(id)`, `reported_by_user_id` $\rightarrow$ `users(id)`, `approved_by_user_id` $\rightarrow$ `users(id)`, `supplier_id` $\rightarrow$ `suppliers(id)`
+
+| Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
+| :--- | :--- | :---: | :---: | :--- |
+| `id` | `BIGINT` | NO | Auto | Khóa chính |
+| `branch_id` | `BIGINT` | NO | | Chi nhánh báo hỏng |
+| `item_id` | `BIGINT` | NO | | Mặt hàng / Món ăn bị hỏng |
+| `batch_id` | `BIGINT` | YES | | Thuộc lô nhập nào |
+| `reported_by_user_id`| `BIGINT` | NO | | Nhân viên lập báo cáo hỏng |
+| `approved_by_user_id`| `BIGINT` | YES | | Quản lý bếp/chi nhánh duyệt |
+| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng hỏng đề xuất hủy (kg/đĩa) |
+| `damage_type` | `VARCHAR(50)` | NO | | Phân loại: `HONG_DO_NCC`, `HONG_KHO`, `HONG_CHE_BIEN` (cháy mẻ) |
+| `reason` | `VARCHAR(255)` | NO | | Lý do chi tiết |
+| `image_url` | `TEXT` | NO | | URL ảnh chụp bằng chứng (nén Canvas $\le 250$ KB) |
+| `supplier_id` | `BIGINT` | YES | | NCC liên quan (để kế toán trừ công nợ đối soát) |
+| `status` | `VARCHAR(30)` | NO | `'CHO_DUYET'`| Trạng thái: `CHO_DUYET`, `DA_DUYET`, `TU_CHOI` |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm gửi báo cáo |
+| `approved_at` | `TIMESTAMPTZ` | YES | | Thời điểm quản lý duyệt |
+
+#### 2.9. Bảng `daily_waste_confirmations` (NÚT 5: Tổng Hợp Món Dùng & Chốt Đồ Ăn Thừa Cuối Ca)
+Ghi nhận khối lượng thức ăn còn thừa trên line buffet hoặc trong bếp bị tiêu hủy/chốt cuối ca để đối soát thất thoát.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `confirmed_by_user_id` $\rightarrow$ `users(id)`
 
@@ -302,58 +384,60 @@ Ghi nhận khối lượng thức ăn còn thừa trên line buffet bị tiêu h
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh |
-| `item_id` | `BIGINT` | NO | | Món ăn bị hủy trên line |
+| `item_id` | `BIGINT` | NO | | Món ăn bị thừa |
 | `confirmed_by_user_id`| `BIGINT` | NO | | Bếp trưởng/Quản lý chi nhánh xác nhận |
-| `waste_weight` | `NUMERIC(10,3)`| NO | | Khối lượng đem đổ hủy (kg) |
-| `waste_date` | `DATE` | NO | | Ngày chốt hủy |
-| `image_url` | `TEXT` | YES | | Ảnh chụp thùng đổ thức ăn thừa |
-| `note` | `VARCHAR(255)` | YES | | Ghi chú tình hình khách ăn thừa |
+| `waste_weight` | `NUMERIC(10,3)`| NO | | Khối lượng/Số đĩa đem đổ hủy |
+| `waste_date` | `DATE` | NO | | Ngày chốt hủy ca |
+| `location` | `VARCHAR(50)` | YES | `'LINE'` | Vị trí thừa: `LINE` (trên quầy buffet), `BEP` (trong bếp) |
+| `image_url` | `TEXT` | NO | | **Ảnh chụp mặt bàn cân thức ăn thừa (Bắt buộc chống gian lận)** |
+| `note` | `VARCHAR(255)` | YES | | Ghi chú lý do thừa (khách ít, dự trù thừa...) |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm xác nhận |
 
 ---
 
 ### PHÂN HỆ 3: QUẢN LÝ KHO, LÔ HÀNG & NHÀ CUNG CẤP (7 BẢNG)
 
-#### 3.1. Bảng `suppliers` (Danh mục Nhà Cung Cấp)
-Quản lý các đối tác giao nguyên liệu thịt, hải sản, rau củ, đồ khô, đồ uống.
+#### 3.1. Bảng `suppliers` (Danh mục Nhà Cung Cấp Thực Tế)
+Quản lý 24 nhà cung cấp thực tế đối tác từ sổ nhập hàng Quế Võ (`QVTHN` - Chị Tâm Hà Nội, `QVLIENCUA` - Liên Cua Cà Mau, `QVCOPHUONG` - Cô Phượng Nghệ An, `QVDUNGCH` - Anh Khanh Cá Hồi, `QVANHLUC` - Công ty CP Shalom LG...).
 * **PK**: `id` (`BIGINT`)
 * **Unique**: `supplier_code` (`VARCHAR(50)`)
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `supplier_code` | `VARCHAR(50)` | NO | | Mã NCC (`NCC_VIFOOD`, `NCC_MEATDELI`...) |
+| `supplier_code` | `VARCHAR(50)` | NO | | Mã NCC thực tế (`QVTHN`, `QVLIENCUA`, `QVCOTHAO`...) |
 | `supplier_name` | `VARCHAR(150)` | NO | | Tên đơn vị cung ứng |
-| `contact_person` | `VARCHAR(100)` | YES | | Người đại diện giao nhận |
+| `contact_person` | `VARCHAR(100)` | YES | | Người đại diện giao hàng |
 | `phone` | `VARCHAR(50)` | YES | | Số điện thoại liên hệ |
-| `address` | `VARCHAR(255)` | YES | | Địa chỉ kho nhà cung cấp |
-| `debt_balance` | `NUMERIC(15,2)`| NO | `0` | Công nợ hiện tại với nhà cung cấp (VNĐ) |
+| `address` | `VARCHAR(255)` | YES | | Địa chỉ kho đối tác |
+| `debt_balance` | `NUMERIC(15,2)`| NO | `0` | Công nợ hiện tại với NCC (VNĐ) |
 | `is_active` | `BOOLEAN` | NO | `true` | Trạng thái hợp tác |
-| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo |
+| `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày tạo đối tác |
 
-#### 3.2. Bảng `import_batches` (Quản lý Lô Hàng Nhập Kho)
-Theo dõi hạn sử dụng, ngày sản xuất và số lượng của từng đợt nhập để xuất kho theo nguyên tắc FIFO (Hàng nhập trước xuất trước / Hàng cận date xuất trước).
+#### 3.2. Bảng `import_batches` (Quản Lý Lô Hàng Nhập Kho FEFO)
+Theo dõi hạn sử dụng, ngày sản xuất và số lượng của từng đợt nhập để xuất kho theo nguyên tắc FEFO (Hàng cận date xuất trước).
 * **PK**: `id` (`BIGINT`)
-* **Unique**: `batch_code` (`VARCHAR(50)`)
+* **Unique**: `batch_code` (`VARCHAR(100)`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `supplier_id` $\rightarrow$ `suppliers(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `batch_code` | `VARCHAR(50)` | NO | | Mã lô hàng (`LOT-202611-001`) |
+| `batch_code` | `VARCHAR(100)`| NO | | Mã lô hàng (`LOT-QV-202611-QVBAP`) |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh nhập lô |
 | `item_id` | `BIGINT` | NO | | Mặt hàng nhập |
-| `supplier_id` | `BIGINT` | YES | | Nhà cung cấp xuất kho |
-| `initial_quantity` | `NUMERIC(10,3)`| NO | | Khối lượng lúc nhập về (kg) |
-| `remaining_quantity`| `NUMERIC(10,3)`| NO | | Khối lượng còn lại trong kho (kg) |
-| `unit_price` | `NUMERIC(15,2)`| NO | `0` | Đơn giá nhập thực tế (VNĐ/đơn vị) |
-| `manufacture_date` | `DATE` | YES | | Ngày sản xuất |
+| `supplier_id` | `BIGINT` | YES | | Nhà cung cấp giao lô |
+| `initial_quantity` | `NUMERIC(10,3)`| NO | | Khối lượng lúc nhập về (kg/đơn vị) |
+| `current_stock` | `NUMERIC(10,3)`| NO | | Khối lượng còn lại trong kho |
+| `unit_price` | `NUMERIC(15,2)`| NO | `0` | Đơn giá nhập thực tế (VNĐ) |
+| `unit` | `VARCHAR(50)` | NO | `'kg'` | Đơn vị tính |
+| `import_date` | `DATE` | NO | | Ngày nhập kho |
 | `expiry_date` | `DATE` | YES | | Hạn sử dụng của lô hàng |
 | `status` | `VARCHAR(30)` | NO | `'CON_HANG'`| Trạng thái: `CON_HANG`, `HET_HANG`, `HET_HAN` |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm nhập lô |
 
 #### 3.3. Bảng `warehouse_documents` (Phiếu Nhập / Xuất Kho)
-Lưu thông tin hóa đơn nhập hàng từ NCC, phiếu xuất kho bếp, phiếu xuất hủy, phiếu điều chuyển.
+Lưu trữ hóa đơn cân hàng mới về từ NCC, phiếu xuất kho bếp chế biến, phiếu xuất hủy hư hỏng vài đơn vị của lô.
 * **PK**: `id` (`BIGINT`)
 * **Unique**: `doc_code` (`VARCHAR(50)`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `supplier_id` $\rightarrow$ `suppliers(id)`, `created_by_user_id` $\rightarrow$ `users(id)`
@@ -361,15 +445,15 @@ Lưu thông tin hóa đơn nhập hàng từ NCC, phiếu xuất kho bếp, phi�
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `doc_code` | `VARCHAR(50)` | NO | | Số phiếu (`PNK-202611-001`, `PXK-202611-005`) |
-| `doc_type` | `VARCHAR(30)` | NO | | Loại phiếu: `NHAP_NCC`, `XUAT_BEP`, `XUAT_HUY`, `DIEU_CHUYEN` |
+| `doc_code` | `VARCHAR(50)` | NO | | Số phiếu (`PNK-202611-001`, `PXK-202611-005`, `PXH-202611-002`) |
+| `doc_type` | `VARCHAR(30)` | NO | | Loại: `NHAP_NCC` (Cân hàng mới về), `XUAT_CHE_BIEN`, `XUAT_HUY`, `DIEU_CHUYEN` |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh lập phiếu |
-| `supplier_id` | `BIGINT` | YES | | Nhà cung cấp (với phiếu nhập) |
-| `created_by_user_id`| `BIGINT` | YES | | Nhân viên/Bếp trưởng/Thủ kho lập phiếu |
+| `supplier_id` | `BIGINT` | YES | | Nhà cung cấp liên quan |
+| `created_by_user_id`| `BIGINT` | YES | | Thủ kho/Bếp viên lập phiếu |
 | `status` | `VARCHAR(30)` | NO | `'HOAN_THANH'`| Trạng thái: `TAM_TINH`, `HOAN_THANH`, `DA_HUY` |
-| `total_amount` | `NUMERIC(15,2)`| NO | `0` | Tổng giá trị phiếu nhập/xuất (VNĐ) |
-| `image_urls` | `TEXT` | YES | | Danh sách link ảnh chụp phiếu giao hàng/hóa đơn NCC |
-| `note` | `VARCHAR(255)` | YES | | Diễn giải nội dung nhập xuất |
+| `total_amount` | `NUMERIC(15,2)`| NO | `0` | Tổng giá trị tiền phiếu (VNĐ) |
+| `image_urls` | `TEXT` | YES | | Link ảnh chụp phiếu cân/giao nhận NCC |
+| `note` | `VARCHAR(255)` | YES | | Diễn giải lý do |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày lập phiếu |
 | `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Ngày cập nhật |
 
@@ -383,28 +467,28 @@ Lưu thông tin hóa đơn nhập hàng từ NCC, phiếu xuất kho bếp, phi�
 | `document_id` | `BIGINT` | NO | | ID phiếu kho |
 | `item_id` | `BIGINT` | NO | | Mặt hàng nhập/xuất |
 | `batch_id` | `BIGINT` | YES | | Lô hàng liên quan |
-| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng/Số lượng thực nhập hoặc thực xuất |
+| `quantity` | `NUMERIC(10,3)`| NO | | Số lượng thực tế nhập hoặc xuất |
 | `unit_price` | `NUMERIC(15,2)`| NO | `0` | Đơn giá thực tế tại thời điểm lập phiếu |
-| `note` | `VARCHAR(255)` | YES | | Ghi chú riêng cho dòng hàng |
+| `note` | `VARCHAR(255)` | YES | | Ghi chú dòng hàng |
 
 #### 3.5. Bảng `inventory_stocks` (Sổ Theo Dõi Tồn Kho Thực Tế)
-Lưu số lượng tồn kho theo từng chi nhánh, từng mặt hàng và từng kho (Kho mát, Kho đông lạnh, Kho đồ khô...).
+Lưu số lượng tồn kho tức thời theo chi nhánh, mặt hàng và phân vùng kho vật lý (`KHO_DONG_LANH`, `KHO_BE_SONG`, `KHO_KHO`, `KHO_BAR`).
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `batch_id` $\rightarrow$ `import_batches(id)`
 
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `branch_id` | `BIGINT` | NO | | Chi nhánh lưu kho |
+| `branch_id` | `BIGINT` | NO | | Chi nhánh |
 | `item_id` | `BIGINT` | NO | | Mặt hàng tồn |
-| `batch_id` | `BIGINT` | YES | | Lô hàng (nếu theo dõi chi tiết theo lô) |
-| `warehouse_type` | `VARCHAR(50)` | NO | `'KHO_TONG'` | Phân loại kho: `KHO_DONG_LANH`, `KHO_MAT`, `KHO_DO_KHO`, `KHO_BEP` |
-| `quantity` | `NUMERIC(10,3)`| NO | `0` | Tổng khối lượng tồn trong kho (kg) |
-| `reserved_quantity`| `NUMERIC(10,3)`| NO | `0` | Khối lượng đang được giữ chỗ / đang chế biến dở |
-| `available_quantity`| `NUMERIC(10,3)`| NO | `0` | Khối lượng thực tế khả dụng cho phép bếp rút ra |
-| `min_stock_level` | `NUMERIC(10,3)`| YES | `0` | Định mức tồn tối thiểu (dưới mức này sẽ cảnh báo nhập) |
+| `batch_id` | `BIGINT` | YES | | Lô hàng chi tiết |
+| `warehouse_type` | `VARCHAR(50)` | NO | `'KHO_KHO'` | Phân vùng kho vật lý |
+| `quantity` | `NUMERIC(10,3)`| NO | `0` | Tổng khối lượng tồn trong kho |
+| `reserved_quantity`| `NUMERIC(10,3)`| NO | `0` | Khối lượng đang giữ cho mẻ nấu |
+| `available_quantity`| `NUMERIC(10,3)`| NO | `0` | Khối lượng thực tế khả dụng cho phép rút |
+| `min_stock_level` | `NUMERIC(10,3)`| YES | `0` | Định mức tồn tối thiểu (cảnh báo nhập) |
 | `max_stock_level` | `NUMERIC(10,3)`| YES | | Định mức tồn tối đa |
-| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm số dư kho cập nhật gần nhất |
+| `updated_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm cập nhật số dư |
 
 #### 3.6. Bảng `inventory_checks` (Phiếu Kiểm Kê Kho Định Kỳ)
 * **PK**: `id` (`BIGINT`)
@@ -416,10 +500,10 @@ Lưu số lượng tồn kho theo từng chi nhánh, từng mặt hàng và từ
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
 | `check_code` | `VARCHAR(50)` | NO | | Mã đợt kiểm kê (`KK-202611-001`) |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh kiểm kê |
-| `checked_by_user_id`| `BIGINT` | NO | | Người phụ trách kiểm kê (Bếp trưởng / Kế toán) |
+| `checked_by_user_id`| `BIGINT` | NO | | Người phụ trách (Bếp trưởng / Kế toán) |
 | `check_date` | `DATE` | NO | | Ngày kiểm kê thực tế |
 | `status` | `VARCHAR(30)` | NO | `'HOAN_THANH'`| Trạng thái: `DANG_KIEM`, `HOAN_THANH`, `CAN_XU_LY_LECH` |
-| `note` | `VARCHAR(255)` | YES | | Đánh giá tổng quan đợt kiểm kê |
+| `note` | `VARCHAR(255)` | YES | | Đánh giá tổng quan |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm tạo phiếu |
 
 #### 3.7. Bảng `inventory_check_items` (Chi Tiết Mặt Hàng Kiểm Kê)
@@ -429,20 +513,20 @@ Lưu số lượng tồn kho theo từng chi nhánh, từng mặt hàng và từ
 | Tên Cột | Kiểu Dữ Liệu | Nullable | Mặc Định | Mô Tả Nghiệp Vụ |
 | :--- | :--- | :---: | :---: | :--- |
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
-| `check_id` | `BIGINT` | NO | | Thuộc đợt kiểm kê nào |
+| `check_id` | `BIGINT` | NO | | ID phiếu kiểm kê |
 | `item_id` | `BIGINT` | NO | | Mặt hàng kiểm đếm |
 | `batch_id` | `BIGINT` | YES | | Lô hàng kiểm tra |
-| `book_quantity` | `NUMERIC(10,3)`| NO | | Tồn sổ sách theo hệ thống (kg) |
-| `actual_quantity` | `NUMERIC(10,3)`| NO | | Tồn thực tế cân đếm được tại kho (kg) |
+| `book_quantity` | `NUMERIC(10,3)`| NO | | Tồn sổ sách theo hệ thống |
+| `actual_quantity` | `NUMERIC(10,3)`| NO | | Tồn thực tế cân đếm tại kho |
 | `discrepancy_quantity`| `NUMERIC(10,3)`| NO| | Chênh lệch: $\text{Thực tế} - \text{Sổ sách}$ |
-| `reason` | `VARCHAR(255)` | YES | | Giải trình lý do lệch (bay hơi, hao hụt tự nhiên, nhầm lẫn) |
+| `reason` | `VARCHAR(255)` | YES | | Giải trình lý do lệch |
 
 ---
 
 ### PHÂN HỆ 4: ĐỐI SOÁT BÁN HÀNG CUKCUK POS & CHỐNG THẤT THOÁT (4 BẢNG)
 
 #### 4.1. Bảng `cukcuk_sales_imports` (Đợt Nhập Dữ Liệu Bán Hàng Từ POS CukCuk)
-Lưu nhật ký các lần kế toán upload file Excel doanh thu xuất từ phần mềm bán hàng CukCuk.
+Lưu nhật ký các lần kế toán upload file Excel doanh thu xuất từ phần mềm bán hàng CukCuk POS.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `imported_by_user_id` $\rightarrow$ `users(id)`
 
@@ -458,7 +542,7 @@ Lưu nhật ký các lần kế toán upload file Excel doanh thu xuất từ ph
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm import |
 
 #### 4.2. Bảng `inventory_snapshots` (Ảnh Chụp Tồn Kho Đầu / Cuối Ngày)
-Cố định trạng thái tồn kho tại các thời điểm giao ban để làm mốc đối soát chuẩn xác.
+Cố định trạng thái tồn kho tại các thời điểm giao ban làm mốc đối soát.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `item_id` $\rightarrow$ `items(id)`, `checked_by_user_id` $\rightarrow$ `users(id)`
 
@@ -469,7 +553,7 @@ Cố định trạng thái tồn kho tại các thời điểm giao ban để l�
 | `item_id` | `BIGINT` | NO | | Mặt hàng |
 | `snapshot_date` | `DATE` | NO | | Ngày chốt số tồn |
 | `snapshot_type` | `VARCHAR(30)` | NO | | Thời điểm: `DAU_NGAY`, `CUOI_NGAY` |
-| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng tồn được ghi nhận (kg) |
+| `quantity` | `NUMERIC(10,3)`| NO | | Khối lượng tồn được ghi nhận |
 | `checked_by_user_id`| `BIGINT` | YES | | Người kiểm tra và chốt số liệu |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm tạo bản ghi snapshot |
 
@@ -506,7 +590,7 @@ Bảng trung tâm phát hiện thất thoát nguyên vật liệu. Tự động 
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh xảy ra cảnh báo |
 | `notification_type`| `VARCHAR(50)` | NO | | Loại: `LOSS_WARNING`, `BATCH_OVER_STANDARD`, `SALARY_ADVANCE` |
-| `recipient_group` | `VARCHAR(100)` | NO | | Nhóm nhận tin (Group Zalo Ban Giám Đốc, Group Chi nhánh) |
+| `recipient_group` | `VARCHAR(100)` | NO | | Nhóm nhận tin (Group Zalo Ban Giám Đốc, Group Kế toán) |
 | `content` | `TEXT` | NO | | Nội dung tin nhắn gửi qua Webhook |
 | `status` | `VARCHAR(30)` | NO | `'SENT'` | Trạng thái gửi: `SENT`, `FAILED`, `RETRYING` |
 | `retry_count` | `INTEGER` | NO | `0` | Số lần gửi lại nếu mất kết nối |
@@ -567,7 +651,7 @@ Lưu lịch sử chấm công Check-in / Check-out, đo khoảng cách Haversine
 | `id` | `BIGINT` | NO | Auto | Khóa chính |
 | `user_id` | `BIGINT` | NO | | Thí sinh dự thi |
 | `branch_id` | `BIGINT` | NO | | Chi nhánh |
-| `exam_title` | `VARCHAR(150)` | NO | | Tên kỳ sát hạch (Thi hết việc thử việc, Nâng bậc lương) |
+| `exam_title` | `VARCHAR(150)` | NO | | Tên kỳ sát hạch (Thi hết thử việc, Nâng bậc lương) |
 | `total_score` | `NUMERIC(5,2)`| NO | `0` | Tổng điểm đạt được |
 | `is_passed` | `BOOLEAN` | NO | `false` | Đạt yêu cầu nếu điểm $\ge 80/100$ |
 | `graded_by_user_id`| `BIGINT` | YES | | Quản lý/Bếp trưởng chấm thi |
@@ -605,7 +689,7 @@ Lưu lịch sử chấm công Check-in / Check-out, đo khoảng cách Haversine
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm tạo |
 
 #### 5.6. Bảng `resignation_requests` (Đơn Xin Nghỉ Việc & Ràng Buộc Trả Lương)
-Quản lý quy trình nghỉ việc chuẩn hoặc bỏ việc đột xuất. **Chỉ được mở trạng thái chi trả lương giữ lại khi đã thu hồi đầy đủ đồng phục**.
+Quản lý quy trình nghỉ việc chuẩn hoặc bỏ việc đột xuất. **Chỉ được mở trạng thái chi trả lương giữ lại khi Quản lý đã tick xác nhận `uniform_returned = true`**.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `user_id` $\rightarrow$ `users(id)`, `approved_by_user_id` $\rightarrow$ `users(id)`, `cancelled_by_user_id` $\rightarrow$ `users(id)`
 
@@ -638,12 +722,12 @@ Quản lý quy trình nghỉ việc chuẩn hoặc bỏ việc đột xuất. **
 | `branch_id` | `BIGINT` | NO | | Chi nhánh áp dụng quy tắc |
 | `rule_name` | `VARCHAR(100)` | NO | | Tên quy tắc (Phạt đi muộn, Thưởng chuyên cần...) |
 | `rule_type` | `VARCHAR(30)` | NO | | Loại: `PHAT_DI_MUON`, `THUONG_CHUYEN_CAN`, `PHU_CAP_CA_GAY` |
-| `condition_threshold`| `NUMERIC(10,2)`| NO | `0` | Mốc điều kiện (ví dụ: $>$ 15 phút đi muộn, làm $\ge 26$ công) |
+| `condition_threshold`| `NUMERIC(10,2)`| NO | `0` | Mốc điều kiện ($>$ 15 phút đi muộn, làm $\ge 26$ công...) |
 | `amount` | `NUMERIC(15,2)`| NO | `0` | Số tiền phạt hoặc thưởng tương ứng (VNĐ) |
 | `is_active` | `BOOLEAN` | NO | `true` | Trạng thái hiệu lực |
 
 #### 6.2. Bảng `salary_advances` (Đơn Xin Ứng Lương Giữa Tháng)
-Quản lý việc nhân viên ứng lương. Số tiền ứng sẽ tự động bị khấu trừ trên bảng lương tháng cuối cùng.
+Quản lý nhân viên xin ứng lương. Số tiền ứng tự động bị khấu trừ trên bảng lương tháng cuối cùng.
 * **PK**: `id` (`BIGINT`)
 * **FK**: `branch_id` $\rightarrow$ `branches(id)`, `user_id` $\rightarrow$ `users(id)`, `approved_by_user_id` $\rightarrow$ `users(id)`
 
@@ -670,8 +754,8 @@ Quản lý việc nhân viên ứng lương. Số tiền ứng sẽ tự động
 | `branch_id` | `BIGINT` | NO | | Chi nhánh |
 | `current_salary` | `NUMERIC(15,2)`| NO | | Mức lương hiện tại (VNĐ) |
 | `proposed_salary` | `NUMERIC(15,2)`| NO | | Mức lương mới đề xuất (VNĐ) |
-| `reason` | `TEXT` | NO | | Lý do tăng lương (vượt qua kỳ thi sát hạch, thành tích tốt) |
-| `effective_date` | `DATE` | NO | | Ngày bắt đầu áp dụng mức lương mới |
+| `reason` | `TEXT` | NO | | Lý do tăng lương |
+| `effective_date` | `DATE` | NO | | Ngày bắt đầu áp dụng |
 | `status` | `VARCHAR(30)` | NO | `'CHO_DUYET'`| Trạng thái: `CHO_DUYET`, `DA_DUYET`, `TU_CHOI` |
 | `approved_by_user_id`| `BIGINT` | YES | | Chủ chuỗi / Admin duyệt |
 | `created_at` | `TIMESTAMPTZ` | NO | `now()` | Thời điểm đề xuất |
@@ -732,9 +816,11 @@ Tổng hợp toàn bộ công, lương cứng, phụ cấp ca gãy, thưởng ch
    - `idx_damage_branch_created`: `damage_reports (branch_id, created_at DESC)`
    - `idx_reconcile_branch_date`: `daily_reconciliations (branch_id, reconciliation_date)`
    - `idx_attendance_branch_date`: `attendances (branch_id, attendance_date)`
-2. **Chỉ mục Truy vấn Tồn Kho Nhanh**:
+2. **Chỉ mục Truy vấn Kho 2 Tầng (Kho Trước & Kho Sau)**:
    - `idx_stocks_branch_item`: `inventory_stocks (branch_id, item_id)`
    - `idx_stocks_warehouse`: `inventory_stocks (warehouse_type)`
+   - `idx_processed_dishes_branch_status`: `processed_dishes (branch_id, status)`
+   - `idx_processed_dishes_dish_code`: `processed_dishes (dish_code)`
 3. **Chỉ mục Truy vấn Khách Hàng / POS CukCuk**:
    - `idx_cukcuk_branch_date`: `cukcuk_sales_imports (branch_id, import_date)`
 
@@ -747,6 +833,23 @@ Mọi thay đổi cấu trúc bảng trong tương lai **bắt buộc tuân th�
 2. Tạo file migration mới theo định dạng: `V<Next_Version>__<Mo_ta_thay_doi>.sql` đặt tại thư mục:
    `backend/src/main/resources/db/migration/`
 3. Khi Spring Boot khởi động, Flyway sẽ tự động nhận diện và thực thi tuần tự trong transaction an toàn.
+
+### Danh mục 13 Phiên Bản Flyway Migrations Hiện Tại:
+| Phiên Bản | Tên Tệp Migration | Mô Tả Nghiệp Vụ |
+| :---: | :--- | :--- |
+| `V1` | `V1__init_auth_and_master.sql` | Khởi tạo bảng chi nhánh, quyền hạn, nhân sự cơ bản |
+| `V2` | `V2__seed_branches_and_demo_users.sql` | Nạp dữ liệu 2 chi nhánh và tài khoản mẫu |
+| `V3` | `V3__kitchen_and_processing_schema.sql` | Khởi tạo bảng mẻ chế biến, rút kho, báo hỏng, ra line |
+| `V4` | `V4__reconciliation_and_cukcuk_schema.sql` | Khởi tạo bảng nhập POS CukCuk và bảng đối soát cuối ngày |
+| `V5` | `V5__hr_and_attendance_schema.sql` | Khởi tạo bảng chấm công GPS, thi tay nghề và cấp phát đồng phục |
+| `V6` | `V6__payroll_and_advances_schema.sql` | Khởi tạo bảng quy tắc lương, ứng lương và bảng lương tháng |
+| `V7` | `V7__warehouse_lots_and_suppliers.sql` | Khởi tạo bảng nhà cung cấp, lô nhập FEFO và phiếu kho |
+| `V8` | `V8__kitchen_rules_and_daily_items.sql` | Thiết lập cờ món dùng trong ngày và định mức mẻ |
+| `V9` | `V9__multi_role_user_schema.sql` | Hỗ trợ người dùng kiêm nhiệm nhiều vai trò (Multi-role) |
+| `V10`| `V10__payroll_enhancement_and_locks.sql` | Thêm cơ chế niêm phong khóa kỳ lương và khấu trừ ứng |
+| `V11`| `V11__comprehensive_demo_seed_data.sql` | Nạp toàn bộ dữ liệu demo kiểm thử tự động |
+| `V12`| `V12__seed_real_preprocessing_inventory_que_vo.sql` | Nạp 24 NCC thực tế, 217 mặt hàng thực tế Quế Võ T11/2026, 11 nhóm danh mục Kho Trước Chế Biến và tồn ban đầu |
+| `V13`| `V13__create_processed_dishes_and_batch_extensions.sql` | Tạo bảng `processed_dishes` (Kho Sau Chế Biến), mở rộng `processing_batches` (`raw_photo_url`, `scale_photo_url`, `output_plates`, `approval_status`), nạp 8 món ăn hoàn chỉnh cho 2 chi nhánh |
 
 ```bash
 # Kiểm tra lịch sử migration trực tiếp từ container PostgreSQL:
